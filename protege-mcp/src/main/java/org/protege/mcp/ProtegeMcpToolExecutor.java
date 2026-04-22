@@ -535,8 +535,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
             issues.add("Ontology has no IRI (anonymous).");
         }
         // Check for version IRI without ontology IRI
-        if (!ont.getOntologyID().getOntologyIRI().isPresent()
-                && ont.getOntologyID().getVersionIRI().isPresent()) {
+        if (ont.getOntologyID().getVersionIRI().isPresent()) {
             issues.add("Version IRI present but no ontology IRI.");
         }
 
@@ -876,7 +875,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         s.put("type", "object");
         ObjectNode props = s.putObject("properties");
         ArrayNode required = MAPPER.createArrayNode();
-        for (int i = 0; i + 2 < fieldTypeDesc.length; i += 3) {
+        for (int i = 0; i + 3 <= fieldTypeDesc.length; i += 3) {
             String field = fieldTypeDesc[i];
             ObjectNode fp = props.putObject(field);
             fp.put("type", fieldTypeDesc[i + 1]);
