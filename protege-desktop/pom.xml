@@ -46,6 +46,12 @@
 
 		<dependency>
 			<groupId>edu.stanford.protege</groupId>
+			<artifactId>protege-mcp</artifactId>
+			<version>${project.parent.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>edu.stanford.protege</groupId>
 			<artifactId>protege-launcher</artifactId>
 			<version>${project.parent.version}</version>
 		</dependency>

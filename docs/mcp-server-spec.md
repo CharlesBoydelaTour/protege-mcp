@@ -1,42 +1,68 @@
 # Protege MCP Server Specification
 
-This document defines a draft [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server surface for local ontology access built around Protege and OWLAPI. It is aligned with the MCP documentation model: a host runs an MCP client, the client connects to an MCP server, and the server exposes capabilities through `tools/list` and `tools/call` over JSON-RPC 2.0.
+This document defines the **v1** [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server surface for
+Protege Desktop, implemented in the `protege-mcp` bundle.  The server runs **attached** to a live Protege process
+and is reached through `stdio` only.  HTTP transport and SPARQL queries are out of scope for v1.
 
 ## 1. Goals
 
-- Expose Protege and OWLAPI ontology operations as MCP tools.
-- Support both read and write operations.
-- Keep writes safe through validation, sandboxing, and explicit persistence tools.
+- Expose the open OWL ontologies in a running Protege Desktop instance as MCP tools.
+- Support read introspection, high-level semantic writes, validation, and persistence.
+- Keep writes safe through sandboxing, `dry_run`, and explicit `sandbox_commit`.
 - Remain compatible with standard MCP clients and hosts.
+- Opt-in only: the server must be explicitly enabled; it does not auto-start for normal desktop users.
 
 ## 2. MCP framing
 
 ### 2.1 Roles and transport
 
-This specification assumes the standard MCP roles:
+Standard MCP roles:
 
-- host: the desktop app, agent runtime, or integration environment
-- client: the MCP protocol implementation used by the host
-- server: the Protege ontology service described in this document
+- **host**: the desktop app, agent runtime, or integration environment
+- **client**: the MCP protocol implementation used by the host
+- **server**: the Protege ontology service described in this document
 
-The server should support the MCP transports commonly used by clients:
+**v1 transport: `stdio` only.**  The server reads Content-Length–framed JSON-RPC 2.0 messages from `stdin` and
+writes responses to `stdout`.  Each message is preceded by a header of the form:
 
-- `stdio` for local desktop or agent-hosted execution
-- streamable HTTP for remote or service-managed execution
+```
+Content-Length: <byte-count>\r\n\r\n
+```
 
-### 2.2 Initialization
+followed by the UTF-8 JSON body.  This matches the [MCP stdio transport spec](https://modelcontextprotocol.io/docs/concepts/transports).
+
+HTTP transport is deferred to a future version.
+
+### 2.2 Opt-in startup
+
+The server is **disabled by default**.  To enable it, set one of the following before Protege starts:
+
+| Mechanism | Value |
+|---|---|
+| Java system property `protege.mcp.enabled` | `true` |
+| Environment variable `PROTEGE_MCP_ENABLED` | `true` |
+
+Example (Protege launch script):
+```bash
+-Dprotege.mcp.enabled=true
+```
+
+Example (shell):
+```bash
+export PROTEGE_MCP_ENABLED=true
+```
+
+### 2.3 Initialization
 
 The server participates in standard MCP capability negotiation:
 
 1. client sends `initialize`
-2. server returns supported capabilities
+2. server returns supported capabilities (protocol version `2025-03-26`)
 3. client sends `notifications/initialized`
 4. client discovers tools through `tools/list`
 5. client invokes operations through `tools/call`
 
-### 2.3 Server capabilities
-
-For the first iteration, the server primarily exposes MCP tools:
+### 2.4 Server capabilities
 
 ```json
 {
@@ -46,18 +72,16 @@ For the first iteration, the server primarily exposes MCP tools:
 }
 ```
 
-Future versions may also expose:
+### 2.5 Workspace and mutation model
 
-- resources for ontology snapshots, exports, and reports
-- prompts for guided ontology editing workflows
-
-### 2.4 Workspace and mutation model
-
-- A client opens an ontology into a workspace.
-- Each workspace has an `ontology_id` and may also have a writable `sandbox_id`.
-- Read tools can target the live ontology or a sandbox.
-- Write tools default to sandboxed changes unless explicitly configured otherwise.
-- Persistent writes are finalized with `sandbox_commit` or `ontology_save`.
+- The server **discovers** workspaces from the currently open OWL editor kits in the running Protege instance.
+- Each workspace is identified by its ontology IRI string (`ontology_id`).
+- Each workspace supports at most **one sandbox** – an ordered list of pending axiom additions.
+- Write tools default to the sandbox (`direct: false`).
+- `sandbox_commit` promotes pending sandbox axioms to the live ontology.
+- `ontology_save` persists the live ontology to disk.
+- Pass `dry_run: true` to validate a write call without applying it.
+- Pass `direct: true` to bypass the sandbox and apply immediately.
 
 ## 3. Common conventions
 
@@ -753,40 +777,43 @@ Returns: `reasoners`, `formats`, `write_policies`, `query_features`.
 
 Returns: `dirty`, `locked`, `sandbox_present`, `pending_changes`, `last_validation`.
 
-## 5. Summary table
+## 5. Summary table — v1 implemented tools
 
-| Tool | Mode | Description |
-| --- | --- | --- |
-| `ontology_open` | read/write | Open an ontology and create a workspace, optionally with a sandbox. |
-| `ontology_close` | read/write | Close a workspace and optionally discard sandbox state. |
-| `ontology_list` | read | List all open ontology workspaces. |
-| `ontology_info` | read | Return ontology metadata, identifiers, counts, and workspace state. |
-| `entity_search` | read | Search ontology entities by label, fragment, or IRI. |
-| `entity_get` | read | Get the structured details of one ontology entity. |
-| `hierarchy_get` | read | Inspect asserted or reasoned hierarchy relationships. |
-| `axioms_list` | read | List axioms for the ontology or a specific entity. |
-| `sparql_query` | read | Execute a SPARQL query over the ontology view. |
-| `dl_query` | read | Execute a DL query with a reasoner. |
-| `class_create` | write | Create a class with optional labels and parents. |
-| `property_create` | write | Create an object, data, or annotation property. |
-| `individual_create` | write | Create a named individual with optional types. |
-| `individual_assert_type` | write | Assert an individual's rdf:type relationship. |
-| `annotation_set` | write | Add or replace an annotation assertion. |
-| `axiom_add` | write | Add a low-level OWL axiom. |
-| `axiom_remove` | write | Remove a low-level OWL axiom. |
-| `batch_apply` | write | Apply a set of mutations atomically. |
-| `ontology_validate` | read | Run structural or policy validation checks. |
-| `consistency_check` | read | Check ontology consistency with a reasoner. |
-| `reasoner_classify` | read | Run classification and summarize inferred results. |
-| `ontology_save` | write | Persist ontology state to disk. |
-| `ontology_export` | read | Export ontology content to another serialization target. |
-| `snapshot_create` | write | Capture a rollback snapshot. |
-| `snapshot_restore` | write | Restore a prior snapshot into the active state. |
-| `sandbox_commit` | write | Promote sandbox changes into the active workspace. |
-| `diff_get` | read | Compare live, sandbox, or snapshot states. |
-| `server_info` | read | Return server-level metadata and implementation limits. |
-| `ontology_capabilities` | read | Describe ontology-specific supported features. |
-| `workspace_status` | read | Inspect workspace and sandbox health. |
+The following tools are implemented in the `protege-mcp` v1 bundle.  Tools marked **deferred** are described in
+section 4 but are not registered in v1.
+
+| Tool | Mode | Status | Description |
+| --- | --- | --- | --- |
+| `server_info` | read | ✅ v1 | Server version, transport, and supported capabilities. |
+| `ontology_list` | read | ✅ v1 | List all ontologies open in the attached Protege workspace. |
+| `ontology_open` | write | ✅ v1 | Load an ontology from a URI into the workspace. |
+| `ontology_close` | write | ✅ v1 | Close an ontology workspace and discard its sandbox. |
+| `ontology_info` | read | ✅ v1 | Axiom counts, format, and workspace state. |
+| `ontology_capabilities` | read | ✅ v1 | Write support, reasoner availability, and export formats. |
+| `workspace_status` | read | ✅ v1 | Dirty state, lock state, and pending sandbox changes. |
+| `entity_search` | read | ✅ v1 | Search entities by fragment or label. |
+| `entity_get` | read | ✅ v1 | Structured details and annotations for a single entity. |
+| `hierarchy_get` | read | ✅ v1 | Asserted parents and children for a class. |
+| `axioms_list` | read | ✅ v1 | List axioms for the ontology or a specific entity. |
+| `dl_query` | read | ✅ v1 | Manchester Syntax DL query (instances or subclasses). |
+| `class_create` | write | ✅ v1 | Declare a new OWL class. Defaults to sandbox. |
+| `property_create` | write | ✅ v1 | Declare a new property (object/data/annotation). Defaults to sandbox. |
+| `individual_create` | write | ✅ v1 | Declare a named individual. Defaults to sandbox. |
+| `individual_assert_type` | write | ✅ v1 | Add an `rdf:type` assertion. Defaults to sandbox. |
+| `annotation_set` | write | ✅ v1 | Add an annotation assertion. Defaults to sandbox. |
+| `ontology_validate` | read | ✅ v1 | Structural validation checks. |
+| `consistency_check` | read | ✅ v1 | Check consistency with the active reasoner. |
+| `reasoner_classify` | read | ✅ v1 | Run classification and report unsatisfiable classes. |
+| `ontology_save` | write | ✅ v1 | Persist ontology to its physical location. |
+| `ontology_export` | read | ✅ v1 | Export as Turtle, RDF/XML, or Manchester. |
+| `sandbox_commit` | write | ✅ v1 | Promote sandbox changes to the live ontology. |
+| `sparql_query` | read | ❌ out of scope | SPARQL queries are not included in v1. |
+| `axiom_add` | write | ⏭ deferred | Low-level axiom mutation. |
+| `axiom_remove` | write | ⏭ deferred | Low-level axiom removal. |
+| `batch_apply` | write | ⏭ deferred | Atomic mutation batch. |
+| `snapshot_create` | write | ⏭ deferred | Rollback snapshot. |
+| `snapshot_restore` | write | ⏭ deferred | Restore snapshot. |
+| `diff_get` | read | ⏭ deferred | Compare live, sandbox, or snapshot states. |
 
 ## 6. Error response convention
 
@@ -885,54 +912,54 @@ To preserve compatibility, new tools should:
 
 ## 8. Example MCP configuration
 
-### 8.1 Local `stdio` server
+### 8.1 Cursor / Claude Desktop (stdio, attached mode)
+
+Point your MCP client at the Protege executable and set `PROTEGE_MCP_ENABLED=true`:
 
 ```json
 {
   "mcpServers": {
     "protege": {
-      "command": "java",
-      "args": [
-        "-jar",
-        "/opt/protege-mcp/protege-mcp-server.jar"
-      ],
+      "command": "/Applications/Protégé.app/Contents/MacOS/Protege",
       "env": {
-        "PROTEGE_MCP_MODE": "owlapi",
-        "PROTEGE_MCP_SANDBOX_DEFAULT": "true"
+        "PROTEGE_MCP_ENABLED": "true"
       }
     }
   }
 }
 ```
 
-### 8.2 HTTP deployment
+On Linux:
 
 ```json
 {
-  "name": "protege-mcp-server",
-  "transport": "http",
-  "listen": {
-    "host": "127.0.0.1",
-    "port": 8080
-  },
-  "backend": {
-    "type": "owlapi",
-    "sandbox_default": true,
-    "validation_profile": "strict"
+  "mcpServers": {
+    "protege": {
+      "command": "/opt/protege/run.sh",
+      "env": {
+        "PROTEGE_MCP_ENABLED": "true"
+      }
+    }
   }
 }
 ```
 
-## 9. Recommended implementation order
+HTTP transport is not supported in v1.
 
-1. lifecycle tools
-2. entity inspection and search
-3. high-level semantic writes
-4. low-level axiom operations
-5. validation and reasoning
-6. persistence, snapshots, and diff tools
-7. resources and prompts if needed by the client ecosystem
+## 9. Recommended next steps
+
+1. ✅ lifecycle tools (v1)
+2. ✅ entity inspection and search (v1)
+3. ✅ high-level semantic writes (v1)
+4. ✅ validation and reasoning (v1)
+5. ✅ persistence and export (v1)
+6. ⏭ low-level axiom operations (`axiom_add`, `axiom_remove`)
+7. ⏭ snapshot and diff tools
+8. ⏭ MCP resources and prompts
+9. ⏭ HTTP transport (opt-in, separate from attached stdio mode)
 
 ## 10. Status
 
-This is a draft server specification for a Protege-oriented MCP integration. It is intended to align the ontology tool surface with current MCP concepts and provide a stable base for implementation.
+v1 is implemented in the `protege-mcp` OSGi bundle.  It is opt-in, stdio-only, attached to a live Protege Desktop
+process, and has no SPARQL support.  The 23 tools listed as ✅ in section 5 are registered and functional.
+Deferred tools are described in section 4 but not yet registered.
