@@ -10,6 +10,8 @@ If you would like to contribute to the Protege Project please see our [contribut
 
 The [Developer Documentation](https://github.com/protegeproject/protege/wiki/Developer-Documentation) may be found on the wiki.
 
+An MCP server specification draft for local ontology access is available in [docs/mcp-server-spec.md](docs/mcp-server-spec.md).
+
 **Looking for support?** Please ask questions on the [protege-user](https://protege.stanford.edu/support.php) or [protege-dev](https://protege.stanford.edu/support.php) mailing lists. If you found a bug or would like to request a feature, you may also use [this issue tracker](https://github.com/protegeproject/protege/issues).
 
 Protege is released under the [BSD 2-clause license](https://raw.githubusercontent.com/protegeproject/protege/master/license.txt).
