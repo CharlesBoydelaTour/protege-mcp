@@ -1,0 +1,37 @@
+{
+    "inputs": [
+        {
+            "id": "protegeHome",
+            "type": "promptString",
+            "description": "Absolute path to the extracted Protege Desktop directory (the folder containing run.sh / run.bat, e.g. /Users/me/tools/Protege-5.6.10-SNAPSHOT)."
+        },
+        {
+            "id": "javaHome",
+            "type": "promptString",
+            "description": "Optional JAVA_HOME for Protege (leave blank to use the system JDK / bundled jre).",
+            "default": ""
+        }
+    ],
+    "servers": {
+        "protege-mcp": {
+            "type": "stdio",
+            "command": "${input:protegeHome}/run.sh",
+            "args": [],
+            "env": {
+                "CMD_OPTIONS": "-Dprotege.mcp.enabled=true -Dapple.awt.UIElement=true",
+                "PROTEGE_MCP_ENABLED": "true",
+                "JAVA_HOME": "${input:javaHome}"
+            }
+        },
+        "protege-mcp-windows": {
+            "type": "stdio",
+            "command": "${input:protegeHome}/run.bat",
+            "args": [],
+            "env": {
+                "CMD_OPTIONS": "-Dprotege.mcp.enabled=true",
+                "PROTEGE_MCP_ENABLED": "true",
+                "JAVA_HOME": "${input:javaHome}"
+            }
+        }
+    }
+}

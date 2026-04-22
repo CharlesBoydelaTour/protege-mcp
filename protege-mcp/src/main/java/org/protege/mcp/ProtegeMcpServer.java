@@ -62,11 +62,9 @@ public class ProtegeMcpServer {
                 default:
                     return errorResponse(id, -32601, "Method not found", objectNode().put("method", method));
             }
-        }
-        catch (ProtegeMcpToolExecutor.McpException e) {
+        } catch (ProtegeMcpToolExecutor.McpException e) {
             return errorResponse(id, e.getCode(), e.getMessage(), e.getData());
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             ObjectNode data = objectNode();
             data.put("exception", e.getClass().getName());
             data.put("message", e.getMessage() == null ? "" : e.getMessage());
@@ -81,7 +79,7 @@ public class ProtegeMcpServer {
         capabilities.putObject("tools");
         ObjectNode serverInfo = result.putObject("serverInfo");
         serverInfo.put("name", "protege-mcp");
-        serverInfo.put("version", "0.1.0");
+        serverInfo.put("version", ProtegeMcpVersion.get());
         return result;
     }
 

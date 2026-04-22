@@ -64,6 +64,7 @@
 		<dependency>
 			<groupId>org.mockito</groupId>
 			<artifactId>mockito-core</artifactId>
+			<version>5.14.2</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
@@ -79,13 +80,8 @@
 						<Bundle-Activator>org.protege.mcp.ProtegeMcpBundleActivator</Bundle-Activator>
 						<Bundle-SymbolicName>org.protege.mcp;singleton:=true</Bundle-SymbolicName>
 						<Embed-Dependency>*;scope=provided;inline=true</Embed-Dependency>
-						<Export-Package>
-							org.protege.mcp.*;version=${project.version}
-						</Export-Package>
-						<Import-Package>
-							javax.annotation.*;resolution:=optional,
-							*
-						</Import-Package>
+						<Export-Package>!org.protege.mcp.*</Export-Package>
+						<Import-Package>*</Import-Package>
 					</instructions>
 				</configuration>
 			</plugin>

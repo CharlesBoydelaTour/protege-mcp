@@ -297,6 +297,9 @@ Returns: `axioms[]`.
 
 #### `sparql_query`
 
+> **Deferred to V2** — described here for forward reference. Not registered in
+> `tools/list` for V1 (see section 5).
+
 ```json
 {
   "name": "sparql_query",

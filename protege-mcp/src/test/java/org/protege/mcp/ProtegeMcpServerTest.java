@@ -43,6 +43,11 @@ public class ProtegeMcpServerTest {
         assertEquals("2025-03-26", result.path("protocolVersion").asText());
         assertTrue(result.path("capabilities").has("tools"));
         assertEquals("protege-mcp", result.path("serverInfo").path("name").asText());
+        String version = result.path("serverInfo").path("version").asText();
+        assertNotNull(version);
+        assertTrue("version must be non-empty", !version.isEmpty());
+        assertTrue("version must match \\d+.\\d+.\\d+ pattern, was: " + version,
+                version.matches("\\d+\\.\\d+\\.\\d+.*"));
     }
 
     // -----------------------------------------------------------------------

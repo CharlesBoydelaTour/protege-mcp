@@ -25,12 +25,13 @@ import java.util.stream.Collectors;
 
 /**
  * Concrete MCP tool executor that bridges JSON-RPC tool calls to the live
- * Protege OWL model manager.  One instance is created per OSGi bundle
+ * Protege OWL model manager. One instance is created per OSGi bundle
  * activation and shared across all MCP sessions.
  *
- * <p>Sandbox model: each workspace (identified by its ontology IRI string)
+ * <p>
+ * Sandbox model: each workspace (identified by its ontology IRI string)
  * owns at most one sandbox – an ordered list of pending {@link AddAxiom}
- * changes.  Write tools accumulate changes in the sandbox by default.
+ * changes. Write tools accumulate changes in the sandbox by default.
  * {@code sandbox_commit} promotes them to the live ontology.
  */
 public class ProtegeMcpToolExecutor implements McpToolExecutor {
@@ -50,8 +51,13 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
             this.data = data;
         }
 
-        public int getCode() { return code; }
-        public JsonNode getData() { return data; }
+        public int getCode() {
+            return code;
+        }
+
+        public JsonNode getData() {
+            return data;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -59,7 +65,6 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     // -----------------------------------------------------------------------
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final String VERSION = "0.1.0";
 
     /** Pending sandbox axioms: ontologyId -> ordered list of axiom additions. */
     private final Map<String, List<OWLAxiom>> sandboxes = new ConcurrentHashMap<>();
@@ -78,29 +83,52 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     @Override
     public JsonNode execute(String toolName, JsonNode args) throws Exception {
         switch (toolName) {
-            case "server_info":           return serverInfo();
-            case "ontology_list":         return ontologyList();
-            case "ontology_open":         return ontologyOpen(args);
-            case "ontology_close":        return ontologyClose(args);
-            case "ontology_info":         return ontologyInfo(args);
-            case "ontology_capabilities": return ontologyCapabilities(args);
-            case "workspace_status":      return workspaceStatus(args);
-            case "entity_search":         return entitySearch(args);
-            case "entity_get":            return entityGet(args);
-            case "hierarchy_get":         return hierarchyGet(args);
-            case "axioms_list":           return axiomsList(args);
-            case "dl_query":              return dlQuery(args);
-            case "class_create":          return classCreate(args);
-            case "property_create":       return propertyCreate(args);
-            case "individual_create":     return individualCreate(args);
-            case "individual_assert_type":return individualAssertType(args);
-            case "annotation_set":        return annotationSet(args);
-            case "ontology_validate":     return ontologyValidate(args);
-            case "consistency_check":     return consistencyCheck(args);
-            case "reasoner_classify":     return reasonerClassify(args);
-            case "ontology_save":         return ontologySave(args);
-            case "ontology_export":       return ontologyExport(args);
-            case "sandbox_commit":        return sandboxCommit(args);
+            case "server_info":
+                return serverInfo();
+            case "ontology_list":
+                return ontologyList();
+            case "ontology_open":
+                return ontologyOpen(args);
+            case "ontology_close":
+                return ontologyClose(args);
+            case "ontology_info":
+                return ontologyInfo(args);
+            case "ontology_capabilities":
+                return ontologyCapabilities(args);
+            case "workspace_status":
+                return workspaceStatus(args);
+            case "entity_search":
+                return entitySearch(args);
+            case "entity_get":
+                return entityGet(args);
+            case "hierarchy_get":
+                return hierarchyGet(args);
+            case "axioms_list":
+                return axiomsList(args);
+            case "dl_query":
+                return dlQuery(args);
+            case "class_create":
+                return classCreate(args);
+            case "property_create":
+                return propertyCreate(args);
+            case "individual_create":
+                return individualCreate(args);
+            case "individual_assert_type":
+                return individualAssertType(args);
+            case "annotation_set":
+                return annotationSet(args);
+            case "ontology_validate":
+                return ontologyValidate(args);
+            case "consistency_check":
+                return consistencyCheck(args);
+            case "reasoner_classify":
+                return reasonerClassify(args);
+            case "ontology_save":
+                return ontologySave(args);
+            case "ontology_export":
+                return ontologyExport(args);
+            case "sandbox_commit":
+                return sandboxCommit(args);
             default:
                 throw new McpException(-32601, "Unknown tool: " + toolName, null);
         }
@@ -113,7 +141,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     private JsonNode serverInfo() {
         ObjectNode r = MAPPER.createObjectNode();
         r.put("name", "protege-mcp");
-        r.put("version", VERSION);
+        r.put("version", ProtegeMcpVersion.get());
         r.put("transport", "stdio");
         r.put("mcp_protocol_version", "2025-03-26");
         r.put("attached", true);
@@ -155,6 +183,15 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         try {
             IRI iri = IRI.create(uri);
             OWLOntology ont = mm.getOWLOntologyManager().loadOntologyFromOntologyDocument(iri);
+            // Make the freshly loaded ontology the active one so workspace
+            // services (entity finder, class hierarchy provider, renderer)
+            // index it and subsequent reads/writes see it.
+            try {
+                mm.setActiveOntology(ont);
+            } catch (RuntimeException ignored) {
+                // Defensive: do not fail the open if the workspace refuses
+                // an active-ontology switch (e.g. during shutdown).
+            }
             ObjectNode r = MAPPER.createObjectNode();
             r.put("ontology_id", ontologyIdFor(ont));
             r.put("axiom_count", ont.getAxiomCount());
@@ -162,6 +199,12 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
             return r;
         } catch (OWLOntologyAlreadyExistsException e) {
             OWLOntology ont = mm.getOWLOntologyManager().getOntology(e.getOntologyID());
+            if (ont != null) {
+                try {
+                    mm.setActiveOntology(ont);
+                } catch (RuntimeException ignored) {
+                }
+            }
             ObjectNode r = MAPPER.createObjectNode();
             r.put("ontology_id", ontologyIdFor(ont));
             r.put("already_open", true);
@@ -245,7 +288,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
 
     private JsonNode entitySearch(JsonNode args) {
         String ontId = requireString(args, "ontology_id");
-        String query  = requireString(args, "query");
+        String query = requireString(args, "query");
         OWLModelManager mm = requireModelManager();
         resolveOntology(ontId, mm); // validate
         Set<OWLEntity> matches = mm.getOWLEntityFinder().getMatchingOWLEntities(query);
@@ -253,7 +296,8 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         ArrayNode items = MAPPER.createArrayNode();
         int count = 0;
         for (OWLEntity e : matches) {
-            if (count++ >= limit) break;
+            if (count++ >= limit)
+                break;
             items.add(entityNode(e, mm));
         }
         ObjectNode r = MAPPER.createObjectNode();
@@ -263,7 +307,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode entityGet(JsonNode args) {
-        String ontId   = requireString(args, "ontology_id");
+        String ontId = requireString(args, "ontology_id");
         String entityIri = requireString(args, "entity_iri");
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
@@ -286,7 +330,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode hierarchyGet(JsonNode args) {
-        String ontId   = requireString(args, "ontology_id");
+        String ontId = requireString(args, "ontology_id");
         String classIri = firstRequiredString(args, "entity_iri", "class_iri");
         OWLModelManager mm = requireModelManager();
         resolveOntology(ontId, mm);
@@ -320,7 +364,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
             Set<OWLEntity> entities = mm.getOWLEntityFinder().getEntities(entityIri);
             axiomSet = new LinkedHashSet<>();
             for (OWLEntity e : entities) {
-                axiomSet.addAll(ont.getAxioms(e));
+                axiomSet.addAll(ont.getReferencingAxioms(e));
             }
         } else {
             axiomSet = ont.getAxioms();
@@ -329,7 +373,8 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         ArrayNode items = MAPPER.createArrayNode();
         int count = 0;
         for (OWLAxiom ax : axiomSet) {
-            if (count++ >= limit) break;
+            if (count++ >= limit)
+                break;
             ObjectNode an = MAPPER.createObjectNode();
             an.put("type", ax.getAxiomType().getName());
             an.put("axiom", ax.toString());
@@ -343,17 +388,17 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode dlQuery(JsonNode args) {
-        String ontId  = requireString(args, "ontology_id");
-        String expr   = requireString(args, "expression");
-        String mode   = args.path("mode").asText("instances");
+        String ontId = requireString(args, "ontology_id");
+        String expr = requireString(args, "expression");
+        String mode = args.path("mode").asText("instances");
         OWLModelManager mm = requireModelManager();
         resolveOntology(ontId, mm);
 
         OWLClassExpression ce;
         try {
             ce = mm.getOWLExpressionCheckerFactory()
-                   .getOWLClassExpressionChecker()
-                   .createObject(expr);
+                    .getOWLClassExpressionChecker()
+                    .createObject(expr);
         } catch (Exception e) {
             throw new McpException(-32602, "Invalid DL expression: " + e.getMessage(), null);
         }
@@ -385,9 +430,9 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     // -----------------------------------------------------------------------
 
     private JsonNode classCreate(JsonNode args) {
-        String ontId    = requireString(args, "ontology_id");
+        String ontId = requireString(args, "ontology_id");
         String classIri = requireString(args, "class_iri");
-        boolean dryRun  = args.path("dry_run").asBoolean(false);
+        boolean dryRun = args.path("dry_run").asBoolean(false);
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
         OWLDataFactory df = mm.getOWLDataFactory();
@@ -404,8 +449,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
                     changes.add(new AddAxiom(ont, df.getOWLSubClassOfAxiom(cls, parent)));
                 }
             }
-        }
-        else if (args.has("parent_iri") && !args.path("parent_iri").asText("").isEmpty()) {
+        } else if (args.has("parent_iri") && !args.path("parent_iri").asText("").isEmpty()) {
             OWLClass parent = df.getOWLClass(IRI.create(args.path("parent_iri").asText()));
             changes.add(new AddAxiom(ont, df.getOWLSubClassOfAxiom(cls, parent)));
         }
@@ -421,13 +465,13 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode propertyCreate(JsonNode args) {
-        String ontId    = requireString(args, "ontology_id");
-        String propIri  = requireString(args, "property_iri");
-        String kind     = firstString(args, "property_kind", "kind");
+        String ontId = requireString(args, "ontology_id");
+        String propIri = requireString(args, "property_iri");
+        String kind = firstString(args, "property_kind", "kind");
         if (kind == null || kind.isEmpty()) {
             kind = "object";
         }
-        boolean dryRun  = args.path("dry_run").asBoolean(false);
+        boolean dryRun = args.path("dry_run").asBoolean(false);
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
         OWLDataFactory df = mm.getOWLDataFactory();
@@ -460,8 +504,8 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode individualCreate(JsonNode args) {
-        String ontId   = requireString(args, "ontology_id");
-        String indIri  = requireString(args, "individual_iri");
+        String ontId = requireString(args, "ontology_id");
+        String indIri = requireString(args, "individual_iri");
         boolean dryRun = args.path("dry_run").asBoolean(false);
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
@@ -479,8 +523,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
                     changes.add(new AddAxiom(ont, df.getOWLClassAssertionAxiom(type, ind)));
                 }
             }
-        }
-        else if (args.has("type_iri") && !args.path("type_iri").asText("").isEmpty()) {
+        } else if (args.has("type_iri") && !args.path("type_iri").asText("").isEmpty()) {
             OWLClass type = df.getOWLClass(IRI.create(args.path("type_iri").asText()));
             changes.add(new AddAxiom(ont, df.getOWLClassAssertionAxiom(type, ind)));
         }
@@ -495,16 +538,16 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode individualAssertType(JsonNode args) {
-        String ontId   = requireString(args, "ontology_id");
-        String indIri  = requireString(args, "individual_iri");
+        String ontId = requireString(args, "ontology_id");
+        String indIri = requireString(args, "individual_iri");
         String typeIri = firstRequiredString(args, "class_iri", "type_iri");
         boolean dryRun = args.path("dry_run").asBoolean(false);
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
         OWLDataFactory df = mm.getOWLDataFactory();
 
-        OWLNamedIndividual ind  = df.getOWLNamedIndividual(IRI.create(indIri));
-        OWLClass           type = df.getOWLClass(IRI.create(typeIri));
+        OWLNamedIndividual ind = df.getOWLNamedIndividual(IRI.create(indIri));
+        OWLClass type = df.getOWLClass(IRI.create(typeIri));
         List<OWLOntologyChange> changes = Collections.singletonList(
                 new AddAxiom(ont, df.getOWLClassAssertionAxiom(type, ind)));
 
@@ -518,17 +561,17 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode annotationSet(JsonNode args) {
-        String ontId    = requireString(args, "ontology_id");
-        String subjIri  = firstRequiredString(args, "target_iri", "subject_iri");
-        String propIri  = requireString(args, "property_iri");
-        String value    = requireString(args, "value");
-        boolean dryRun  = args.path("dry_run").asBoolean(false);
+        String ontId = requireString(args, "ontology_id");
+        String subjIri = firstRequiredString(args, "target_iri", "subject_iri");
+        String propIri = requireString(args, "property_iri");
+        String value = requireString(args, "value");
+        boolean dryRun = args.path("dry_run").asBoolean(false);
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
         OWLDataFactory df = mm.getOWLDataFactory();
 
-        OWLAnnotationProperty prop    = df.getOWLAnnotationProperty(IRI.create(propIri));
-        OWLAnnotationValue     annVal = df.getOWLLiteral(value);
+        OWLAnnotationProperty prop = df.getOWLAnnotationProperty(IRI.create(propIri));
+        OWLAnnotationValue annVal = df.getOWLLiteral(value);
         OWLAxiom axiom = df.getOWLAnnotationAssertionAxiom(prop, IRI.create(subjIri), annVal);
         List<OWLOntologyChange> changes = Collections.singletonList(new AddAxiom(ont, axiom));
 
@@ -629,16 +672,22 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     }
 
     private JsonNode ontologyExport(JsonNode args) {
-        String ontId  = requireString(args, "ontology_id");
+        String ontId = requireString(args, "ontology_id");
         String format = args.path("format").asText("Turtle");
         OWLModelManager mm = requireModelManager();
         OWLOntology ont = resolveOntology(ontId, mm);
 
         OWLDocumentFormat docFormat;
         switch (format.toLowerCase()) {
-            case "rdf/xml": case "rdfxml": docFormat = new RDFXMLDocumentFormat(); break;
-            case "manchester": docFormat = new ManchesterSyntaxDocumentFormat(); break;
-            default: docFormat = new TurtleDocumentFormat();
+            case "rdf/xml":
+            case "rdfxml":
+                docFormat = new RDFXMLDocumentFormat();
+                break;
+            case "manchester":
+                docFormat = new ManchesterSyntaxDocumentFormat();
+                break;
+            default:
+                docFormat = new TurtleDocumentFormat();
         }
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -699,17 +748,35 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
             if (pm == null) {
                 throw new McpException(-32000, "No active Protege workspace", null);
             }
-            for (EditorKit kit : pm.getEditorKitManager().getEditorKits()) {
+            java.util.List<EditorKit> kits = pm.getEditorKitManager().getEditorKits();
+            for (EditorKit kit : kits) {
                 if (kit instanceof OWLEditorKit) {
                     return ((OWLEditorKit) kit).getOWLModelManager();
                 }
             }
+            // No editor kit registered. This typically means kit registration
+            // failed during Protege startup (e.g. a Look-and-Feel reflection
+            // error on JDK 17+ macOS aborted EditorKitManager.addEditorKit).
+            // Surface a more actionable diagnostic.
+            ObjectNode data = MAPPER.createObjectNode();
+            data.put("editor_kit_count", kits.size());
+            data.put("hint", "no editor kit registered – check Protégé startup log "
+                    + "(~/.Protege/logs/protege.log) for kit registration failures");
+            throw new McpException(-32000, "No active Protege workspace", data);
         } catch (McpException e) {
             throw e;
         } catch (Exception e) {
-            throw new McpException(-32000, "Protege workspace unavailable: " + e.getMessage(), null);
+            // ProtegeManager backed by an inactive OSGi context (e.g. running outside
+            // the Protege Desktop bundle, in tests, or before activation) raises
+            // assorted NPE / IllegalStateException variants from getEditorKitManager().
+            // Surface a single canonical envelope and stash the underlying cause in
+            // `data` for diagnostics rather than leaking it into the user-visible
+            // message.
+            ObjectNode data = MAPPER.createObjectNode();
+            data.put("cause", e.getClass().getName());
+            data.put("detail", e.getMessage() == null ? "" : e.getMessage());
+            throw new McpException(-32000, "No active Protege workspace", data);
         }
-        throw new McpException(-32000, "No active Protege workspace", null);
     }
 
     private OWLOntology resolveOntology(String ontologyId, OWLModelManager mm) {
@@ -726,7 +793,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
     static String ontologyIdFor(OWLOntology ont) {
         com.google.common.base.Optional<IRI> iri = ont.getOntologyID().getOntologyIRI();
         return iri.isPresent() ? iri.get().toString()
-                               : "anon:" + System.identityHashCode(ont);
+                : "anon:" + System.identityHashCode(ont);
     }
 
     private OWLReasoner requireReasoner(OWLModelManager mm) {
@@ -743,9 +810,10 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
      * Otherwise queues axioms in the per-ontology sandbox.
      */
     private void applyOrQueue(String ontId, JsonNode args,
-                              List<OWLOntologyChange> changes,
-                              OWLModelManager mm, boolean dryRun) {
-        if (dryRun) return;
+            List<OWLOntologyChange> changes,
+            OWLModelManager mm, boolean dryRun) {
+        if (dryRun)
+            return;
         if (args.path("direct").asBoolean(false)) {
             mm.applyChanges(changes);
         } else {
@@ -831,47 +899,47 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         tools.add(tool("entity_search",
                 "Search entities by fragment or label fragment; returns IRI, rendering, and type.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "query", "string", "Search string or fragment")));
+                        "query", "string", "Search string or fragment")));
         tools.add(tool("entity_get",
                 "Get structured details and annotations for a single entity by IRI.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "entity_iri", "string", "Absolute entity IRI")));
+                        "entity_iri", "string", "Absolute entity IRI")));
         tools.add(tool("hierarchy_get",
                 "Return asserted parents and children for a class in the class hierarchy.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "entity_iri", "string", "Absolute class IRI")));
+                        "entity_iri", "string", "Absolute class IRI")));
         tools.add(tool("axioms_list",
                 "List axioms for the ontology or for a specific entity. Supports limit and entity_iri.",
                 schema("ontology_id", "string", "Target ontology IRI")));
         tools.add(tool("dl_query",
                 "Execute a Manchester Syntax DL expression; returns instances or subclasses.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "expression", "string", "Manchester Syntax class expression",
-                       "mode", "string", "'instances' (default) or 'subclasses'")));
+                        "expression", "string", "Manchester Syntax class expression",
+                        "mode", "string", "'instances' (default) or 'subclasses'")));
         tools.add(tool("class_create",
                 "Declare a new OWL class, optionally with a parent. Defaults to sandbox.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "class_iri", "string", "IRI for the new class")));
+                        "class_iri", "string", "IRI for the new class")));
         tools.add(tool("property_create",
                 "Declare a new property (object/data/annotation). Defaults to sandbox.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "property_iri", "string", "IRI for the new property",
-                       "property_kind", "string", "'object' | 'data' | 'annotation' (default: object)")));
+                        "property_iri", "string", "IRI for the new property",
+                        "property_kind", "string", "'object' | 'data' | 'annotation' (default: object)")));
         tools.add(tool("individual_create",
                 "Declare a named individual, optionally with an rdf:type. Defaults to sandbox.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "individual_iri", "string", "IRI for the new individual")));
+                        "individual_iri", "string", "IRI for the new individual")));
         tools.add(tool("individual_assert_type",
                 "Add an rdf:type assertion for an existing individual. Defaults to sandbox.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "individual_iri", "string", "Individual IRI",
-                       "class_iri", "string", "Class IRI to assert as type")));
+                        "individual_iri", "string", "Individual IRI",
+                        "class_iri", "string", "Class IRI to assert as type")));
         tools.add(tool("annotation_set",
                 "Add an annotation assertion axiom (e.g. rdfs:label). Defaults to sandbox.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "target_iri", "string", "Subject IRI",
-                       "property_iri", "string", "Annotation property IRI",
-                       "value", "string", "Literal value")));
+                        "target_iri", "string", "Subject IRI",
+                        "property_iri", "string", "Annotation property IRI",
+                        "value", "string", "Literal value")));
         tools.add(tool("ontology_validate",
                 "Run structural validation checks and report issues.",
                 schema("ontology_id", "string", "Target ontology IRI")));
@@ -887,7 +955,7 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         tools.add(tool("ontology_export",
                 "Export ontology content as a string in the specified format.",
                 schema("ontology_id", "string", "Target ontology IRI",
-                       "format", "string", "'Turtle' (default) | 'RDF/XML' | 'Manchester'")));
+                        "format", "string", "'Turtle' (default) | 'RDF/XML' | 'Manchester'")));
         tools.add(tool("sandbox_commit",
                 "Promote pending sandbox axioms to the live ontology.",
                 schema("ontology_id", "string", "Target ontology IRI")));
