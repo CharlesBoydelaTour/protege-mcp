@@ -4,8 +4,8 @@
 
 `protege-mcp` is an OSGi bundle that attaches a [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) server to a running Protégé Desktop instance. The server speaks JSON-RPC 2.0 over `stdio`
-(Content-Length framing) and exposes the open OWL ontologies of the host Protégé workspace as MCP
-tools. V1 supports read introspection, high-level semantic writes with a sandbox-first model,
+or a localhost TCP socket (Content-Length framing) and exposes the open OWL ontologies of the
+host Protégé workspace as MCP tools. V1 supports read introspection, high-level semantic writes with a sandbox-first model,
 reasoning operations (consistency check, classification, DL queries), and on-disk persistence.
 The full surface is described in [docs/mcp-server-spec.md](../docs/mcp-server-spec.md).
 
@@ -63,22 +63,50 @@ Adjust the install root to wherever Protégé Desktop is installed on your machi
 
 ## Enable the server
 
-The bundle is opt-in. On startup the activator logs a disabled message unless one of the
-following is set (see [`ProtegeMcpBundleActivator`](src/main/java/org/protege/mcp/ProtegeMcpBundleActivator.java)):
+**Enabled by default.** Launch Protégé normally and the MCP server starts on stdio as soon as
+the bundle is activated by Felix (see
+[`ProtegeMcpBundleActivator`](src/main/java/org/protege/mcp/ProtegeMcpBundleActivator.java)).
 
-1. **JVM system property** – pass `-Dprotege.mcp.enabled=true` to Protégé. Add it to:
+To disable it, set either of the following to a falsy value
+(`false`, `0`, `no`, `off`, `disabled`, case-insensitive):
+
+1. **JVM system property** – pass `-Dprotege.mcp.enabled=false` to Protégé. Add it to:
    - macOS: `Protege.app/Contents/Info.plist` under `Eclipse/JVMOptions` (or the launcher
      `Protege.cfg` used by your build).
    - Linux: the `Protege.cfg` next to the `Protege` launcher script.
-2. **Environment variable** – export `PROTEGE_MCP_ENABLED=true` in the shell before launching
+2. **Environment variable** – export `PROTEGE_MCP_ENABLED=false` in the shell before launching
    Protégé.
 
-Either mechanism enables the server. If both are absent, the bundle starts inert.
+Setting the system property explicitly to `true` or leaving both unset both result in the
+server starting normally.
 
-## Transport
+## Transports
 
-V1 uses `stdio` only. The server reads JSON-RPC 2.0 messages from `stdin` and writes responses
-to `stdout`, each prefixed with a `Content-Length` header per the MCP stdio spec:
+The bundle exposes **two transports**, both enabled by default and both speaking
+the same `Content-Length`-framed JSON-RPC 2.0 dialect:
+
+- **Stdio** — JSON-RPC over `stdin`/`stdout` of the host Protégé process. Useful
+  when an MCP host launches Protégé as a subprocess (or when Protégé is started
+  from a terminal). Disable with `-Dprotege.mcp.enabled=false` or
+  `PROTEGE_MCP_ENABLED=false`.
+- **Localhost TCP** — `127.0.0.1` only, default port **47800**. Lets an MCP
+  client attach to a Protégé instance you launched yourself (Dock icon, Start
+  menu, double-clicked `.app`, …) where stdio is not available. Disable with
+  `-Dprotege.mcp.tcp.enabled=false` or `PROTEGE_MCP_TCP_ENABLED=false`. Change
+  the port with `-Dprotege.mcp.tcp.port=<n>` or `PROTEGE_MCP_TCP_PORT=<n>`.
+
+The TCP listener is bound exclusively to the loopback interface; it is not
+reachable from other hosts. There is no HTTP/SSE transport in this release.
+
+A small standalone Python script
+[`relay/protege-mcp-relay.py`](relay/protege-mcp-relay.py) bridges stdio MCP
+hosts (such as VS Code) to the TCP transport — see *VS Code (GitHub Copilot
+Chat)* below.
+
+## Transport (legacy, stdio detail)
+
+The framed payload format, identical on both stdio and TCP, follows the
+[MCP stdio spec](https://modelcontextprotocol.io/docs/concepts/transports):
 
 ```
 Content-Length: <byte-count>\r\n
@@ -86,10 +114,11 @@ Content-Length: <byte-count>\r\n
 <utf-8 json body>
 ```
 
-Because Protégé Desktop is a GUI process, a usable `stdio` transport requires that Protégé be
-launched from a terminal (so its `stdin`/`stdout` are connected) or, more commonly, that an MCP
-host launches Protégé as a subprocess and pipes JSON-RPC over the inherited streams. There is
-no HTTP transport in V1.
+Because Protégé Desktop is a GUI process, the stdio transport requires that
+Protégé be launched from a terminal (so its `stdin`/`stdout` are connected) or
+that an MCP host launches Protégé as a subprocess and pipes JSON-RPC over the
+inherited streams. For the much more common case of an already-running Protégé
+GUI, use the localhost TCP transport (and the relay) described above.
 
 ## MCP handshake example
 
@@ -147,8 +176,76 @@ Sourced from [`ProtegeMcpToolExecutor.buildToolDefs()`](src/main/java/org/proteg
 | `ontology_export` | Export ontology content as a string in the specified format (`Turtle`, `RDF/XML`, `Manchester`). |
 | `sandbox_commit` | Promote pending sandbox axioms to the live ontology. |
 
-There are 23 tools currently registered. The spec also describes `sparql_query` and the
-low-level axiom / snapshot / diff tools as deferred to V2 (see *Limits / out of scope* below
+### V1.5 additions
+
+V1.5 introduces direct-mode entity CRUD (no sandbox, no `dry_run`),
+multilingual annotation editing with REPLACE semantics, Manchester-syntax
+axiom-level write tools, and an explicit on-disk reload. Every V1.5 write
+applies its changes via the Swing EDT (see *EDT wrapping* below) so that
+mutations are safe to issue against a live Protégé workspace. V1 direct-mode
+writes (`direct: true`) are now also EDT-wrapped.
+
+**Class CRUD**
+
+| Tool | Description |
+| --- | --- |
+| `class_delete` | Remove all axioms referencing a class (direct mode). |
+| `class_rename` | Rename a class IRI across the active ontology via `OWLEntityRenamer`. |
+
+**Object Property CRUD**
+
+| Tool | Description |
+| --- | --- |
+| `object_property_create` | Declare a new object property, optionally as sub-property of a parent. |
+| `object_property_delete` | Remove all axioms referencing an object property. |
+| `object_property_rename` | Rename an object property IRI across the active ontology. |
+
+**Data Property CRUD**
+
+| Tool | Description |
+| --- | --- |
+| `data_property_create` | Declare a new data property, optionally as sub-property of a parent. |
+| `data_property_delete` | Remove all axioms referencing a data property. |
+| `data_property_rename` | Rename a data property IRI across the active ontology. |
+
+**Individual CRUD**
+
+| Tool | Description |
+| --- | --- |
+| `individual_delete` | Remove all axioms referencing a named individual. |
+| `individual_rename` | Rename a named individual IRI across the active ontology. |
+
+**Annotations (label / comment)**
+
+| Tool | Description |
+| --- | --- |
+| `entity_annotate_set` | Set `rdfs:label` or `rdfs:comment` on an entity. REPLACE semantics: existing annotations on the same `(entity, property, lang)` tuple are removed before the new one is added. Supports a `lang` tag. |
+| `entity_annotate_remove` | Remove `rdfs:label` or `rdfs:comment` annotations from an entity. With `lang`, removes only the matching language; without, removes all annotations of that property. |
+
+**Axiom-level (Manchester)**
+
+| Tool | Description |
+| --- | --- |
+| `axiom_add` | Parse a Manchester-syntax axiom string and add it to the ontology. Errors with `-32602` on parse failure. |
+| `axiom_remove` | Parse a Manchester-syntax axiom string and remove it. Idempotent — removing a missing axiom still returns success. |
+
+**Reload**
+
+| Tool | Description |
+| --- | --- |
+| `ontology_reload` | Force-reload an ontology from its physical URI through the workspace `OWLModelManager`. Discards in-memory edits and the per-ontology sandbox, and invalidates Protégé caches (entity finder, short-form provider). |
+
+**EDT wrapping.** All V1.5 mutation tools — and now V1 direct-mode writes
+plus `sandbox_commit` — apply their changes on the Swing Event Dispatch
+Thread via an internal `runOnEdt(Runnable)` helper. This avoids deadlocks
+between the MCP I/O thread and Protégé's UI listeners, which expect to be
+notified on the EDT. In headless mode (unit tests, no `GraphicsEnvironment`)
+the runnable executes inline. If the call already runs on the EDT, the
+helper short-circuits.
+
+There are **38 tools** currently registered (23 V1 + 15 V1.5). The spec also
+describes `batch_apply`, `snapshot_create`, `snapshot_restore`, `diff_get`,
+and `sparql_query` as deferred to V2 (see *Limits / out of scope* below
 and section 5 of the spec).
 
 The `version` reported in `serverInfo` is sourced at runtime from the bundle's OSGi
@@ -212,12 +309,14 @@ Per [docs/mcp-server-spec.md](../docs/mcp-server-spec.md):
 
 - No SPARQL query tool. The spec lists `sparql_query` as deferred to V2; it is not registered
   in the current `buildToolDefs()`.
-- No low-level axiom add/remove tools. Writes are exposed only through high-level semantic
-  helpers (`class_create`, `property_create`, `individual_create`, `individual_assert_type`,
-  `annotation_set`).
-- No snapshot or diff tools.
-- No HTTP transport — `stdio` only.
+- No batch / snapshot / diff tools (`batch_apply`, `snapshot_create`,
+  `snapshot_restore`, `diff_get`) — still deferred to V2.
+- V1.5 axiom-level write tools (`axiom_add`, `axiom_remove`) cover the
+  `axiom_add` / `axiom_remove` slots from section 4.5 of the spec.
+- No HTTP transport — `stdio` and localhost TCP only (added in 0.3.0).
 - No multi-sandbox support per ontology — at most one sandbox per workspace.
+  V1.5 mutation tools bypass the sandbox and write directly to the live
+  ontology.
 
 ## Integrated launch
 
@@ -232,13 +331,16 @@ mvn -DskipTests -Dmaven.compiler.proc=full -pl protege-desktop -am package
 ```
 
 The platform-independent archive lands at:
+:
 
+```bash
+unzip protege-desktop/target/protege-5.6.10-SNAPSHOT-platform-independent.zip
+cd Protege-5.6.10-SNAPSHOT
+./run.sh
 ```
-protege-desktop/target/protege-${project.version}-platform-independent.zip
-```
 
-Extract and launch with the opt-in flag:
-
+The MCP server starts automatically on stdio. Append `-Dprotege.mcp.enabled=false` to the
+`run.sh` invocation if you want to launch Protégé without it.
 ```bash
 unzip protege-desktop/target/protege-5.6.10-SNAPSHOT-platform-independent.zip
 cd Protege-5.6.10-SNAPSHOT
@@ -265,34 +367,45 @@ locations:
   *MCP: Open User Configuration*.
 
 A ready-to-paste example lives at [examples/vscode-mcp.json](examples/vscode-mcp.json). It
-declares two stdio servers — `protege-mcp` (macOS / Linux, spawning `run.sh`) and
-`protege-mcp-windows` (spawning `run.bat`) — and uses VS Code's `inputs` mechanism to prompt
-for the extracted Protégé directory and an optional `JAVA_HOME`.
+declares three stdio servers:
 
-Step-by-step:
+- **`protege-mcp-attach`** *(recommended)* — VS Code spawns the Python relay
+  ([`relay/protege-mcp-relay.py`](relay/protege-mcp-relay.py)) which connects
+  to a Protégé instance you launched yourself (Dock, `run.sh`, `.app` bundle)
+  via the bundle's localhost TCP transport on `127.0.0.1:47800`.
+- **`protege-mcp-spawn`** — legacy: VS Code spawns `run.sh` itself and speaks
+  stdio with the subprocess.
+- **`protege-mcp-spawn-windows`** — same as `protege-mcp-spawn` but invokes
+  `run.bat`.
+
+Step-by-step (attach mode, recommended):
 
 1. **Build & extract Protégé Desktop** (once):
    ```bash
    mvn -DskipTests -Dmaven.compiler.proc=full -pl protege-desktop -am package
    unzip protege-desktop/target/protege-5.6.10-SNAPSHOT-platform-independent.zip -d ~/tools
    ```
-   Note the absolute path of the extracted folder (the one containing `run.sh`); you will
-   paste it into the `protegeHome` prompt.
-2. **Install the config.** Copy `examples/vscode-mcp.json` to `.vscode/mcp.json` for a
-   workspace-scoped install, or open *MCP: Open User Configuration* and merge the
-   `inputs` / `servers` entries into the user file. Delete whichever of the
-   `protege-mcp` / `protege-mcp-windows` entries does not match your OS.
-3. **Reload VS Code.** Run *MCP: List Servers*; `protege-mcp` should appear. Click *Start* —
-   VS Code spawns Protégé as a stdio child process, prompting you for `protegeHome` (and
-   `javaHome`) on first launch. The opt-in flag is forwarded via the `CMD_OPTIONS`
-   environment variable that `run.sh` appends to the JVM command line.
-4. **Use Copilot Chat in agent mode** and reference tools by name, e.g.
-   `#protege-mcp/ontology_list` or `#protege-mcp/dl_query`.
+2. **Launch Protégé** the way you normally would (Dock icon, Start menu, or
+   `~/tools/Protege-5.6.10-SNAPSHOT/run.sh`). The bundle starts the localhost
+   TCP transport automatically on `127.0.0.1:47800`.
+3. **Install the config.** Copy `examples/vscode-mcp.json` to `.vscode/mcp.json`
+   for a workspace-scoped install, or open *MCP: Open User Configuration* and
+   merge the `inputs` / `servers` entries into the user file.
+4. **Reload VS Code.** Click *Start* on the `protege-mcp-attach` entry and at
+   the `relayScript` prompt paste the absolute path to
+   `protege-mcp/relay/protege-mcp-relay.py`. Leave `port` blank for the default
+   `47800`. Set it only if you overrode the port via `-Dprotege.mcp.tcp.port=<n>`
+   or `PROTEGE_MCP_TCP_PORT=<n>`.
+5. **Use Copilot Chat in agent mode** and reference tools by name, e.g.
+   `#protege-mcp-attach/ontology_list` or `#protege-mcp-attach/dl_query`.
 
-A Swing window will pop up when Protégé starts (the editor kit needs an AWT environment, so
-headless mode is **not** supported). Send the window to the background — do **not** quit
-Protégé from its menu, as that would terminate the MCP server subprocess. VS Code's *Stop*
-button on the server entry is the correct way to shut it down.
+Alternative (spawn mode, legacy): start the `protege-mcp-spawn` (or
+`protege-mcp-spawn-windows`) entry instead. VS Code will prompt for
+`protegeHome` (the extracted Protégé directory containing `run.sh` / `run.bat`)
+and an optional `JAVA_HOME`, then spawn Protégé as a stdio child process. A
+Swing window will pop up — send it to the background but do **not** quit
+Protégé from its menu, as that would terminate the MCP server subprocess.
+VS Code's *Stop* button on the server entry is the correct way to shut it down.
 
 The full tool catalogue and JSON-RPC surface are documented in
 [docs/mcp-server-spec.md](../docs/mcp-server-spec.md).

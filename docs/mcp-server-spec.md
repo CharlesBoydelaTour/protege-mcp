@@ -2,7 +2,7 @@
 
 This document defines the **v1** [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server surface for
 Protege Desktop, implemented in the `protege-mcp` bundle.  The server runs **attached** to a live Protege process
-and is reached through `stdio` only.  HTTP transport and SPARQL queries are out of scope for v1.
+and is reached through `stdio` or a localhost TCP socket.  HTTP/SSE transport and SPARQL queries are out of scope for v1.
 
 ## 1. Goals
 
@@ -10,7 +10,9 @@ and is reached through `stdio` only.  HTTP transport and SPARQL queries are out 
 - Support read introspection, high-level semantic writes, validation, and persistence.
 - Keep writes safe through sandboxing, `dry_run`, and explicit `sandbox_commit`.
 - Remain compatible with standard MCP clients and hosts.
-- Opt-in only: the server must be explicitly enabled; it does not auto-start for normal desktop users.
+- Localhost TCP added in 0.3.0; HTTP/SSE still V2.
+- Opt-out: the server starts automatically whenever the bundle is present; users who do not
+  want it can disable it with a single JVM flag or environment variable.
 
 ## 2. MCP framing
 
@@ -22,8 +24,10 @@ Standard MCP roles:
 - **client**: the MCP protocol implementation used by the host
 - **server**: the Protege ontology service described in this document
 
-**v1 transport: `stdio` only.**  The server reads Content-Length–framed JSON-RPC 2.0 messages from `stdin` and
-writes responses to `stdout`.  Each message is preceded by a header of the form:
+**v1 transports: `stdio` and localhost TCP.**  Both speak the same Content-Length–framed
+JSON-RPC 2.0 dialect. The server reads framed messages from `stdin` (or an accepted TCP
+connection) and writes responses to `stdout` (or back over the same socket).  Each message
+is preceded by a header of the form:
 
 ```
 Content-Length: <byte-count>\r\n\r\n
@@ -31,25 +35,37 @@ Content-Length: <byte-count>\r\n\r\n
 
 followed by the UTF-8 JSON body.  This matches the [MCP stdio transport spec](https://modelcontextprotocol.io/docs/concepts/transports).
 
-HTTP transport is deferred to a future version.
+The TCP transport binds exclusively to `127.0.0.1` (default port `47800`, override with
+`-Dprotege.mcp.tcp.port=<n>` or `PROTEGE_MCP_TCP_PORT=<n>`; disable with
+`-Dprotege.mcp.tcp.enabled=false`). It is intended for MCP hosts attaching to an
+already-running Protege Desktop GUI where stdio is not available; a small Python
+relay (`protege-mcp/relay/protege-mcp-relay.py`) bridges stdio MCP clients to the
+TCP listener.
 
-### 2.2 Opt-in startup
+HTTP/SSE transport is deferred to a future version.
+out startup
 
-The server is **disabled by default**.  To enable it, set one of the following before Protege starts:
+The server is **enabled by default** as soon as the `protege-mcp` bundle is activated by
+Felix.  To disable it, set either of the following to a falsy value
+(`false`, `0`, `no`, `off`, `disabled`, case-insensitive) before Protege starts:
 
-| Mechanism | Value |
+| Mechanism | Disable value |
 |---|---|
-| Java system property `protege.mcp.enabled` | `true` |
-| Environment variable `PROTEGE_MCP_ENABLED` | `true` |
+| Java system property `protege.mcp.enabled` | `false` |
+| Environment variable `PROTEGE_MCP_ENABLED` | `false` |
 
 Example (Protege launch script):
 ```bash
--Dprotege.mcp.enabled=true
+-Dprotege.mcp.enabled=false
 ```
 
 Example (shell):
 ```bash
-export PROTEGE_MCP_ENABLED=true
+export PROTEGE_MCP_ENABLED=false
+```
+
+The system property takes precedence over the environment variable. Setting either to a
+truthy or unrecognised value (or omitting both) leaves the server enabled.ort PROTEGE_MCP_ENABLED=true
 ```
 
 ### 2.3 Initialization
@@ -811,12 +827,73 @@ section 4 but are not registered in v1.
 | `ontology_export` | read | ✅ v1 | Export as Turtle, RDF/XML, or Manchester. |
 | `sandbox_commit` | write | ✅ v1 | Promote sandbox changes to the live ontology. |
 | `sparql_query` | read | ❌ out of scope | SPARQL queries are not included in v1. |
-| `axiom_add` | write | ⏭ deferred | Low-level axiom mutation. |
-| `axiom_remove` | write | ⏭ deferred | Low-level axiom removal. |
+| `axiom_add` | write | ✅ v1.5 | Manchester-syntax axiom add (direct mode, EDT-wrapped). |
+| `axiom_remove` | write | ✅ v1.5 | Manchester-syntax axiom remove (idempotent, direct mode, EDT-wrapped). |
 | `batch_apply` | write | ⏭ deferred | Atomic mutation batch. |
 | `snapshot_create` | write | ⏭ deferred | Rollback snapshot. |
 | `snapshot_restore` | write | ⏭ deferred | Restore snapshot. |
 | `diff_get` | read | ⏭ deferred | Compare live, sandbox, or snapshot states. |
+
+### 5.1 V1.5 additions (0.4.0)
+
+V1.5 adds 15 direct-mode mutation tools to the V1 surface, all of which run
+their `OWLModelManager.applyChanges` call on the Swing EDT (via an internal
+`runOnEdt(Runnable)` helper) so that mutations are safe against a live
+Protégé workspace whose listeners expect to be notified on the EDT. In
+addition, the V1 `direct: true` path on `class_create`, `property_create`,
+`individual_create`, `individual_assert_type`, `annotation_set` and the
+`sandbox_commit` path are now also EDT-wrapped.
+
+V1.5 mutation tools are **direct-write only**: they do not honour
+`dry_run` and never touch the per-ontology sandbox. The V1 sandbox-first
+semantics for the original five write tools are unchanged.
+
+| Tool | Mode | Status | Description |
+| --- | --- | --- | --- |
+| `class_delete` | write | ✅ v1.5 | Remove all axioms referencing a class. |
+| `class_rename` | write | ✅ v1.5 | Rename a class IRI via `OWLEntityRenamer`. |
+| `object_property_create` | write | ✅ v1.5 | Declare an object property, optionally as sub-property. |
+| `object_property_delete` | write | ✅ v1.5 | Remove all axioms referencing an object property. |
+| `object_property_rename` | write | ✅ v1.5 | Rename an object property IRI. |
+| `data_property_create` | write | ✅ v1.5 | Declare a data property, optionally as sub-property. |
+| `data_property_delete` | write | ✅ v1.5 | Remove all axioms referencing a data property. |
+| `data_property_rename` | write | ✅ v1.5 | Rename a data property IRI. |
+| `individual_delete` | write | ✅ v1.5 | Remove all axioms referencing a named individual. |
+| `individual_rename` | write | ✅ v1.5 | Rename a named individual IRI. |
+| `entity_annotate_set` | write | ✅ v1.5 | Set `rdfs:label` / `rdfs:comment` with REPLACE semantics on `(entity, property, lang)`; supports a `lang` tag. |
+| `entity_annotate_remove` | write | ✅ v1.5 | Remove `rdfs:label` / `rdfs:comment`; with `lang`, only that language. |
+| `axiom_add` | write | ✅ v1.5 | Parse a Manchester-syntax axiom and add it. Errors with `-32602` on parse failure. |
+| `axiom_remove` | write | ✅ v1.5 | Parse a Manchester-syntax axiom and remove it. Idempotent. |
+| `ontology_reload` | write | ✅ v1.5 | Force fresh load from disk through the workspace `OWLModelManager`; discards in-memory edits and the per-ontology sandbox; invalidates Protégé caches (entity finder, short-form provider). |
+
+**EDT wrapping.** The internal `runOnEdt(Runnable)` helper:
+
+- short-circuits in headless mode (`GraphicsEnvironment.isHeadless()`) — used
+  by the test suite — and runs the runnable inline;
+- short-circuits when already on the EDT;
+- otherwise calls `SwingUtilities.invokeAndWait(...)` and unwraps any
+  `InvocationTargetException` so the underlying `RuntimeException` propagates.
+
+**Manchester parser.** `axiom_add` / `axiom_remove` build the parser via
+`OWLManager.createManchesterParser()` and configure it with a
+`ShortFormEntityChecker` backed by a `BidirectionalShortFormProviderAdapter`
+over the active ontology's signature, plus `setDefaultOntology(ont)`. Parse
+failures (`ParserException` or any `RuntimeException`) are surfaced as
+`-32602 Invalid axiom syntax: ...`.
+
+**`entity_annotate_set` REPLACE semantics.** Before adding the new
+annotation, the tool removes every existing `OWLAnnotationAssertionAxiom`
+on the same subject IRI whose annotation property and literal language tag
+match the request. Annotations on a different language (or with no language
+tag, when one was requested) are left untouched.
+
+**`ontology_reload` semantics.** The tool calls
+`OWLModelManager.removeOntology(ont)` followed by
+`OWLOntologyManager.loadOntologyFromOntologyDocument(documentIri)` and then
+`OWLModelManager.setActiveOntology(reloaded)`, all inside the EDT block. The
+per-ontology sandbox for that `ontology_id` is dropped before the reload.
+Unlike `ontology_close` + `ontology_open`, the reload preserves the
+ontology IRI and the workspace's notion of which kit is active.
 
 ## 6. Error response convention
 
@@ -956,13 +1033,20 @@ HTTP transport is not supported in v1.
 3. ✅ high-level semantic writes (v1)
 4. ✅ validation and reasoning (v1)
 5. ✅ persistence and export (v1)
-6. ⏭ low-level axiom operations (`axiom_add`, `axiom_remove`)
-7. ⏭ snapshot and diff tools
-8. ⏭ MCP resources and prompts
-9. ⏭ HTTP transport (opt-in, separate from attached stdio mode)
+6. ✅ entity CRUD: delete / rename for classes, object/data properties, individuals (v1.5)
+7. ✅ multilingual annotation editing (`entity_annotate_set` / `entity_annotate_remove`) (v1.5)
+8. ✅ low-level axiom operations (`axiom_add`, `axiom_remove`, Manchester syntax) (v1.5)
+9. ✅ on-disk reload (`ontology_reload`) (v1.5)
+10. ⏭ snapshot / diff / batch_apply tools
+11. ⏭ MCP resources and prompts
+12. ⏭ HTTP transport (opt-in, separate from attached stdio mode)
 
 ## 10. Status
 
-v1 is implemented in the `protege-mcp` OSGi bundle.  It is opt-in, stdio-only, attached to a live Protege Desktop
-process, and has no SPARQL support.  The 23 tools listed as ✅ in section 5 are registered and functional.
-Deferred tools are described in section 4 but not yet registered.
+v1.5 is implemented in the `protege-mcp` OSGi bundle (release 0.4.0). It is
+enabled by default, supports both stdio and localhost TCP, attaches to a
+live Protégé Desktop process, and has no SPARQL support. The 38 tools
+listed as ✅ in section 5 (23 V1 + 15 V1.5) are registered and functional.
+All V1.5 mutations and V1 `direct: true` writes are EDT-wrapped. Deferred
+tools (`batch_apply`, `snapshot_create`, `snapshot_restore`, `diff_get`,
+`sparql_query`) are described in section 4 but not yet registered.

@@ -129,6 +129,36 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
                 return ontologyExport(args);
             case "sandbox_commit":
                 return sandboxCommit(args);
+            case "class_delete":
+                return classDelete(args);
+            case "class_rename":
+                return classRename(args);
+            case "object_property_create":
+                return objectPropertyCreate(args);
+            case "object_property_delete":
+                return objectPropertyDelete(args);
+            case "object_property_rename":
+                return objectPropertyRename(args);
+            case "data_property_create":
+                return dataPropertyCreate(args);
+            case "data_property_delete":
+                return dataPropertyDelete(args);
+            case "data_property_rename":
+                return dataPropertyRename(args);
+            case "entity_annotate_set":
+                return entityAnnotateSet(args);
+            case "entity_annotate_remove":
+                return entityAnnotateRemove(args);
+            case "ontology_reload":
+                return ontologyReload(args);
+            case "individual_delete":
+                return individualDelete(args);
+            case "individual_rename":
+                return individualRename(args);
+            case "axiom_add":
+                return axiomAdd(args);
+            case "axiom_remove":
+                return axiomRemove(args);
             default:
                 throw new McpException(-32601, "Unknown tool: " + toolName, null);
         }
@@ -720,10 +750,11 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         }
 
         if (!dryRun) {
-            List<OWLOntologyChange> changes = pending.stream()
+            final List<OWLOntologyChange> changes = pending.stream()
                     .map(ax -> (OWLOntologyChange) new AddAxiom(ont, ax))
                     .collect(Collectors.toList());
-            mm.applyChanges(changes);
+            final OWLModelManager mmFinal = mm;
+            runOnEdt(() -> mmFinal.applyChanges(changes));
             sandboxes.remove(ontId);
         }
 
@@ -732,6 +763,496 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         r.put("committed_changes", pending.size());
         r.put("dry_run", dryRun);
         return r;
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool implementations – V1.5 direct-mode edits
+    // -----------------------------------------------------------------------
+
+    private JsonNode classDelete(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String classIri = requireString(args, "class_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLClass cls = df.getOWLClass(IRI.create(classIri));
+        Set<OWLAxiom> referencing = ont.getReferencingAxioms(cls);
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        for (OWLAxiom ax : referencing) {
+            changes.add(new RemoveAxiom(ont, ax));
+        }
+        if (!changes.isEmpty()) {
+            runOnEdt(() -> mm.applyChanges(changes));
+        }
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("class_iri", classIri);
+        r.put("removed_axioms", changes.size());
+        return r;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JsonNode classRename(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String oldIri = requireString(args, "old_iri");
+        final String newIri = requireString(args, "new_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        final OWLClass oldCls = df.getOWLClass(IRI.create(oldIri));
+        final List<OWLOntologyChange>[] changesHolder = new List[] { null };
+        runOnEdt(() -> {
+            org.semanticweb.owlapi.util.OWLEntityRenamer renamer = new org.semanticweb.owlapi.util.OWLEntityRenamer(
+                    mm.getOWLOntologyManager(), Collections.singleton(ont));
+            List<OWLOntologyChange> changes = renamer.changeIRI(oldCls, IRI.create(newIri));
+            if (!changes.isEmpty()) {
+                mm.applyChanges(changes);
+            }
+            changesHolder[0] = changes;
+        });
+        int applied = changesHolder[0] == null ? 0 : changesHolder[0].size();
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("old_iri", oldIri);
+        r.put("new_iri", newIri);
+        r.put("applied_changes", applied);
+        return r;
+    }
+
+    private JsonNode objectPropertyCreate(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String propIri = requireString(args, "property_iri");
+        final OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLObjectProperty prop = df.getOWLObjectProperty(IRI.create(propIri));
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        changes.add(new AddAxiom(ont, df.getOWLDeclarationAxiom(prop)));
+        String parent = firstString(args, "parent_iri");
+        if (parent != null && !parent.isEmpty()) {
+            OWLObjectProperty parentProp = df.getOWLObjectProperty(IRI.create(parent));
+            changes.add(new AddAxiom(ont, df.getOWLSubObjectPropertyOfAxiom(prop, parentProp)));
+        }
+        runOnEdt(() -> mm.applyChanges(changes));
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("property_iri", propIri);
+        r.put("changes", changes.size());
+        return r;
+    }
+
+    private JsonNode objectPropertyDelete(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String propIri = requireString(args, "property_iri");
+        final OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLObjectProperty prop = df.getOWLObjectProperty(IRI.create(propIri));
+        Set<OWLAxiom> referencing = ont.getReferencingAxioms(prop);
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        for (OWLAxiom ax : referencing) {
+            changes.add(new RemoveAxiom(ont, ax));
+        }
+        if (!changes.isEmpty()) {
+            runOnEdt(() -> mm.applyChanges(changes));
+        }
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("property_iri", propIri);
+        r.put("removed_axioms", changes.size());
+        return r;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JsonNode objectPropertyRename(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String oldIri = requireString(args, "old_iri");
+        final String newIri = requireString(args, "new_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        final OWLObjectProperty old = df.getOWLObjectProperty(IRI.create(oldIri));
+        final List<OWLOntologyChange>[] changesHolder = new List[] { null };
+        runOnEdt(() -> {
+            org.semanticweb.owlapi.util.OWLEntityRenamer renamer = new org.semanticweb.owlapi.util.OWLEntityRenamer(
+                    mm.getOWLOntologyManager(), Collections.singleton(ont));
+            List<OWLOntologyChange> changes = renamer.changeIRI(old, IRI.create(newIri));
+            if (!changes.isEmpty()) {
+                mm.applyChanges(changes);
+            }
+            changesHolder[0] = changes;
+        });
+        int applied = changesHolder[0] == null ? 0 : changesHolder[0].size();
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("old_iri", oldIri);
+        r.put("new_iri", newIri);
+        r.put("applied_changes", applied);
+        return r;
+    }
+
+    private JsonNode dataPropertyCreate(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String propIri = requireString(args, "property_iri");
+        final OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLDataProperty prop = df.getOWLDataProperty(IRI.create(propIri));
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        changes.add(new AddAxiom(ont, df.getOWLDeclarationAxiom(prop)));
+        String parent = firstString(args, "parent_iri");
+        if (parent != null && !parent.isEmpty()) {
+            OWLDataProperty parentProp = df.getOWLDataProperty(IRI.create(parent));
+            changes.add(new AddAxiom(ont, df.getOWLSubDataPropertyOfAxiom(prop, parentProp)));
+        }
+        runOnEdt(() -> mm.applyChanges(changes));
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("property_iri", propIri);
+        r.put("changes", changes.size());
+        return r;
+    }
+
+    private JsonNode dataPropertyDelete(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String propIri = requireString(args, "property_iri");
+        final OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLDataProperty prop = df.getOWLDataProperty(IRI.create(propIri));
+        Set<OWLAxiom> referencing = ont.getReferencingAxioms(prop);
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        for (OWLAxiom ax : referencing) {
+            changes.add(new RemoveAxiom(ont, ax));
+        }
+        if (!changes.isEmpty()) {
+            runOnEdt(() -> mm.applyChanges(changes));
+        }
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("property_iri", propIri);
+        r.put("removed_axioms", changes.size());
+        return r;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JsonNode dataPropertyRename(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String oldIri = requireString(args, "old_iri");
+        final String newIri = requireString(args, "new_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        final OWLDataProperty old = df.getOWLDataProperty(IRI.create(oldIri));
+        final List<OWLOntologyChange>[] changesHolder = new List[] { null };
+        runOnEdt(() -> {
+            org.semanticweb.owlapi.util.OWLEntityRenamer renamer = new org.semanticweb.owlapi.util.OWLEntityRenamer(
+                    mm.getOWLOntologyManager(), Collections.singleton(ont));
+            List<OWLOntologyChange> changes = renamer.changeIRI(old, IRI.create(newIri));
+            if (!changes.isEmpty()) {
+                mm.applyChanges(changes);
+            }
+            changesHolder[0] = changes;
+        });
+        int applied = changesHolder[0] == null ? 0 : changesHolder[0].size();
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("old_iri", oldIri);
+        r.put("new_iri", newIri);
+        r.put("applied_changes", applied);
+        return r;
+    }
+
+    private JsonNode entityAnnotateSet(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String entityIri = requireString(args, "entity_iri");
+        String property = requireString(args, "property");
+        String value = requireString(args, "value");
+        String lang = args.path("lang").asText("");
+        if (!"rdfs:label".equals(property) && !"rdfs:comment".equals(property)) {
+            throw new McpException(-32602, "property must be rdfs:label or rdfs:comment", null);
+        }
+        OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        IRI iri = IRI.create(entityIri);
+        boolean exists = ont.containsClassInSignature(iri)
+                || ont.containsObjectPropertyInSignature(iri)
+                || ont.containsDataPropertyInSignature(iri)
+                || ont.containsIndividualInSignature(iri)
+                || ont.containsAnnotationPropertyInSignature(iri);
+        if (!exists) {
+            throw new McpException(-32010, "Entity not found: " + entityIri, null);
+        }
+        OWLAnnotationProperty annProp = "rdfs:label".equals(property)
+                ? df.getRDFSLabel()
+                : df.getRDFSComment();
+        OWLLiteral literal = (lang != null && !lang.isEmpty())
+                ? df.getOWLLiteral(value, lang)
+                : df.getOWLLiteral(value);
+
+        List<OWLOntologyChange> changes = new ArrayList<>();
+        int removed = 0;
+        for (OWLAnnotationAssertionAxiom ax : ont.getAnnotationAssertionAxioms(iri)) {
+            if (!ax.getProperty().equals(annProp))
+                continue;
+            if (!ax.getValue().asLiteral().isPresent())
+                continue;
+            String litLang = ax.getValue().asLiteral().get().getLang();
+            if (litLang == null)
+                litLang = "";
+            if (litLang.equals(lang)) {
+                changes.add(new RemoveAxiom(ont, ax));
+                removed++;
+            }
+        }
+        OWLAxiom add = df.getOWLAnnotationAssertionAxiom(annProp, iri, literal);
+        changes.add(new AddAxiom(ont, add));
+        final OWLModelManager mmFinal = mm;
+        final List<OWLOntologyChange> changesFinal = changes;
+        runOnEdt(() -> mmFinal.applyChanges(changesFinal));
+
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("entity_iri", entityIri);
+        r.put("property", property);
+        r.put("value", value);
+        r.put("lang", lang);
+        r.put("removed", removed);
+        r.put("added", 1);
+        return r;
+    }
+
+    private JsonNode entityAnnotateRemove(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String entityIri = requireString(args, "entity_iri");
+        String property = requireString(args, "property");
+        String lang = args.path("lang").asText("");
+        boolean langSpecified = args.has("lang") && !args.path("lang").asText("").isEmpty();
+        if (!"rdfs:label".equals(property) && !"rdfs:comment".equals(property)) {
+            throw new McpException(-32602, "property must be rdfs:label or rdfs:comment", null);
+        }
+        OWLModelManager mm = requireModelManager();
+        OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        IRI iri = IRI.create(entityIri);
+        OWLAnnotationProperty annProp = "rdfs:label".equals(property)
+                ? df.getRDFSLabel()
+                : df.getRDFSComment();
+
+        List<OWLOntologyChange> changes = new ArrayList<>();
+        int removed = 0;
+        for (OWLAnnotationAssertionAxiom ax : ont.getAnnotationAssertionAxioms(iri)) {
+            if (!ax.getProperty().equals(annProp))
+                continue;
+            if (langSpecified) {
+                if (!ax.getValue().asLiteral().isPresent())
+                    continue;
+                String litLang = ax.getValue().asLiteral().get().getLang();
+                if (litLang == null)
+                    litLang = "";
+                if (!litLang.equals(lang))
+                    continue;
+            }
+            changes.add(new RemoveAxiom(ont, ax));
+            removed++;
+        }
+        if (!changes.isEmpty()) {
+            final OWLModelManager mmFinal = mm;
+            final List<OWLOntologyChange> changesFinal = changes;
+            runOnEdt(() -> mmFinal.applyChanges(changesFinal));
+        }
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("entity_iri", entityIri);
+        r.put("property", property);
+        r.put("removed", removed);
+        return r;
+    }
+
+    private JsonNode ontologyReload(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        IRI docIri = mm.getOWLOntologyManager().getOntologyDocumentIRI(ont);
+        if (docIri == null) {
+            throw new McpException(-32000, "Cannot reload: no document IRI for " + ontId, null);
+        }
+        final String physicalUri = docIri.toString();
+        final IRI docIriFinal = docIri;
+        sandboxes.remove(ontId);
+        final OWLOntology[] reloadedHolder = new OWLOntology[1];
+        final Throwable[] errHolder = new Throwable[1];
+        runOnEdt(() -> {
+            try {
+                // Use ModelManager so workspace caches are invalidated and listeners notified.
+                mm.removeOntology(ont);
+                OWLOntology reloaded = mm.getOWLOntologyManager()
+                        .loadOntologyFromOntologyDocument(docIriFinal);
+                try {
+                    mm.setActiveOntology(reloaded);
+                } catch (RuntimeException ignored) {
+                }
+                reloadedHolder[0] = reloaded;
+            } catch (Exception e) {
+                errHolder[0] = e;
+            }
+        });
+        if (errHolder[0] != null) {
+            throw new McpException(-32000, "Reload failed: " + errHolder[0].getMessage(), null);
+        }
+        OWLOntology reloaded = reloadedHolder[0];
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("ontology_id", ontologyIdFor(reloaded));
+        r.put("physical_uri", physicalUri);
+        r.put("axiom_count", reloaded.getAxiomCount());
+        r.put("reloaded", true);
+        return r;
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool implementations – V1.5 individuals + axiom-level (Manchester)
+    // -----------------------------------------------------------------------
+
+    private JsonNode individualDelete(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String indIri = requireString(args, "individual_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        OWLNamedIndividual ind = df.getOWLNamedIndividual(IRI.create(indIri));
+        Set<OWLAxiom> referencing = ont.getReferencingAxioms(ind);
+        final List<OWLOntologyChange> changes = new ArrayList<>();
+        for (OWLAxiom ax : referencing) {
+            changes.add(new RemoveAxiom(ont, ax));
+        }
+        if (!changes.isEmpty()) {
+            runOnEdt(() -> mm.applyChanges(changes));
+        }
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("individual_iri", indIri);
+        r.put("removed_axioms", changes.size());
+        return r;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JsonNode individualRename(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String oldIri = requireString(args, "old_iri");
+        final String newIri = requireString(args, "new_iri");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        OWLDataFactory df = mm.getOWLDataFactory();
+        final OWLNamedIndividual old = df.getOWLNamedIndividual(IRI.create(oldIri));
+        final List<OWLOntologyChange>[] changesHolder = new List[] { null };
+        runOnEdt(() -> {
+            org.semanticweb.owlapi.util.OWLEntityRenamer renamer = new org.semanticweb.owlapi.util.OWLEntityRenamer(
+                    mm.getOWLOntologyManager(), Collections.singleton(ont));
+            List<OWLOntologyChange> changes = renamer.changeIRI(old, IRI.create(newIri));
+            if (!changes.isEmpty()) {
+                mm.applyChanges(changes);
+            }
+            changesHolder[0] = changes;
+        });
+        int applied = changesHolder[0] == null ? 0 : changesHolder[0].size();
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("old_iri", oldIri);
+        r.put("new_iri", newIri);
+        r.put("applied_changes", applied);
+        return r;
+    }
+
+    private JsonNode axiomAdd(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String axiomStr = requireString(args, "axiom");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        final OWLAxiom parsed = parseManchesterAxiom(ont, mm.getOWLDataFactory(), axiomStr);
+        runOnEdt(() -> mm.applyChanges(Collections.<OWLOntologyChange>singletonList(new AddAxiom(ont, parsed))));
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("axiom", axiomStr);
+        r.put("added", true);
+        return r;
+    }
+
+    private JsonNode axiomRemove(JsonNode args) {
+        String ontId = requireString(args, "ontology_id");
+        String axiomStr = requireString(args, "axiom");
+        final OWLModelManager mm = requireModelManager();
+        final OWLOntology ont = resolveOntology(ontId, mm);
+        final OWLAxiom parsed = parseManchesterAxiom(ont, mm.getOWLDataFactory(), axiomStr);
+        runOnEdt(() -> mm.applyChanges(Collections.<OWLOntologyChange>singletonList(new RemoveAxiom(ont, parsed))));
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("axiom", axiomStr);
+        r.put("removed", true);
+        return r;
+    }
+
+    /**
+     * Build a Manchester syntax parser configured to resolve short forms
+     * against the given ontology's signature.
+     */
+    private org.semanticweb.owlapi.expression.OWLEntityChecker manchesterEntityChecker(OWLOntology ont) {
+        return new org.semanticweb.owlapi.expression.ShortFormEntityChecker(
+                new org.semanticweb.owlapi.util.BidirectionalShortFormProviderAdapter(
+                        Collections.singleton(ont), new SimpleShortFormProvider()));
+    }
+
+    private OWLAxiom parseManchesterAxiom(OWLOntology ont, OWLDataFactory df, String text) {
+        // Instantiate the parser implementation directly to avoid OWLAPI's Guice
+        // injector under OSGi, which logs a noisy "No instantiation found for
+        // java.util.function.Supplier<OWLOntologyLoaderConfiguration>" error
+        // (the binding isn't visible inside the bundle). The direct constructor
+        // takes a Supplier<OWLOntologyLoaderConfiguration> and an OWLDataFactory.
+        org.semanticweb.owlapi.util.mansyntax.ManchesterOWLSyntaxParser parser = new org.semanticweb.owlapi.manchestersyntax.parser.ManchesterOWLSyntaxParserImpl(
+                () -> new org.semanticweb.owlapi.model.OWLOntologyLoaderConfiguration(),
+                df);
+        parser.setOWLEntityChecker(manchesterEntityChecker(ont));
+        parser.setDefaultOntology(ont);
+        parser.setStringToParse(text);
+        try {
+            return parser.parseAxiom();
+        } catch (org.semanticweb.owlapi.manchestersyntax.renderer.ParserException e) {
+            throw new McpException(-32602, "Invalid axiom syntax: " + e.getMessage(), null);
+        } catch (RuntimeException e) {
+            throw new McpException(-32602, "Invalid axiom syntax: " + e.getMessage(), null);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // EDT helper
+    // -----------------------------------------------------------------------
+
+    /**
+     * Execute {@code r} on the Swing EDT and wait for completion. Used by all
+     * V1.5 mutation tools to avoid deadlocks between Protégé workspace
+     * listeners (which expect to run on the EDT) and the MCP I/O thread.
+     *
+     * <p>
+     * In headless mode (typical for unit tests) or when already on the EDT,
+     * the runnable is executed directly.
+     */
+    private static void runOnEdt(Runnable r) {
+        if (java.awt.GraphicsEnvironment.isHeadless()
+                || javax.swing.SwingUtilities.isEventDispatchThread()) {
+            r.run();
+            return;
+        }
+        final Throwable[] holder = new Throwable[1];
+        try {
+            javax.swing.SwingUtilities.invokeAndWait(() -> {
+                try {
+                    r.run();
+                } catch (Throwable t) {
+                    holder[0] = t;
+                }
+            });
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(ie);
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable cause = ite.getCause() != null ? ite.getCause() : ite;
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new RuntimeException(cause);
+        }
+        if (holder[0] != null) {
+            if (holder[0] instanceof RuntimeException) {
+                throw (RuntimeException) holder[0];
+            }
+            throw new RuntimeException(holder[0]);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -810,12 +1331,12 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
      * Otherwise queues axioms in the per-ontology sandbox.
      */
     private void applyOrQueue(String ontId, JsonNode args,
-            List<OWLOntologyChange> changes,
-            OWLModelManager mm, boolean dryRun) {
+            final List<OWLOntologyChange> changes,
+            final OWLModelManager mm, boolean dryRun) {
         if (dryRun)
             return;
         if (args.path("direct").asBoolean(false)) {
-            mm.applyChanges(changes);
+            runOnEdt(() -> mm.applyChanges(changes));
         } else {
             List<OWLAxiom> sandbox = sandboxes.computeIfAbsent(ontId, k -> new ArrayList<>());
             for (OWLOntologyChange c : changes) {
@@ -959,6 +1480,72 @@ public class ProtegeMcpToolExecutor implements McpToolExecutor {
         tools.add(tool("sandbox_commit",
                 "Promote pending sandbox axioms to the live ontology.",
                 schema("ontology_id", "string", "Target ontology IRI")));
+        tools.add(tool("class_delete",
+                "Remove all axioms referencing a class (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "class_iri", "string", "Class IRI to delete")));
+        tools.add(tool("class_rename",
+                "Rename a class IRI across the active ontology (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "old_iri", "string", "Existing class IRI",
+                        "new_iri", "string", "New class IRI")));
+        tools.add(tool("object_property_create",
+                "Declare a new object property, optionally as sub-property of a parent (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "property_iri", "string", "Object property IRI")));
+        tools.add(tool("object_property_delete",
+                "Remove all axioms referencing an object property (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "property_iri", "string", "Object property IRI")));
+        tools.add(tool("object_property_rename",
+                "Rename an object property IRI across the active ontology (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "old_iri", "string", "Existing object property IRI",
+                        "new_iri", "string", "New object property IRI")));
+        tools.add(tool("data_property_create",
+                "Declare a new data property, optionally as sub-property of a parent (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "property_iri", "string", "Data property IRI")));
+        tools.add(tool("data_property_delete",
+                "Remove all axioms referencing a data property (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "property_iri", "string", "Data property IRI")));
+        tools.add(tool("data_property_rename",
+                "Rename a data property IRI across the active ontology (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "old_iri", "string", "Existing data property IRI",
+                        "new_iri", "string", "New data property IRI")));
+        tools.add(tool("entity_annotate_set",
+                "Set rdfs:label or rdfs:comment on an entity, replacing existing matching annotations (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "entity_iri", "string", "Entity IRI to annotate",
+                        "property", "string", "'rdfs:label' or 'rdfs:comment'",
+                        "value", "string", "Annotation literal value")));
+        tools.add(tool("entity_annotate_remove",
+                "Remove rdfs:label or rdfs:comment annotations from an entity (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "entity_iri", "string", "Entity IRI",
+                        "property", "string", "'rdfs:label' or 'rdfs:comment'")));
+        tools.add(tool("ontology_reload",
+                "Force-reload an ontology from its physical URI, discarding in-memory edits and sandbox.",
+                schema("ontology_id", "string", "Target ontology IRI")));
+        tools.add(tool("individual_delete",
+                "Remove all axioms referencing a named individual (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "individual_iri", "string", "Individual IRI to delete")));
+        tools.add(tool("individual_rename",
+                "Rename a named individual IRI across the active ontology (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "old_iri", "string", "Existing individual IRI",
+                        "new_iri", "string", "New individual IRI")));
+        tools.add(tool("axiom_add",
+                "Parse a Manchester-syntax axiom and add it to the ontology (direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "axiom", "string", "Manchester-syntax axiom string")));
+        tools.add(tool("axiom_remove",
+                "Parse a Manchester-syntax axiom and remove it from the ontology (idempotent, direct mode).",
+                schema("ontology_id", "string", "Target ontology IRI",
+                        "axiom", "string", "Manchester-syntax axiom string")));
         return Collections.unmodifiableList(tools);
     }
 
