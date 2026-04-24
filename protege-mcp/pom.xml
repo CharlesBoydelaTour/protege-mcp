@@ -82,6 +82,7 @@
 						<Embed-Dependency>*;scope=provided;inline=true</Embed-Dependency>
 						<Export-Package>!org.protege.mcp.*</Export-Package>
 						<Import-Package>*</Import-Package>
+						<Main-Class>org.protege.mcp.ProtegeMcpRelay</Main-Class>
 					</instructions>
 				</configuration>
 			</plugin>

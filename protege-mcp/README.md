@@ -98,12 +98,14 @@ the same `Content-Length`-framed JSON-RPC 2.0 dialect:
 The TCP listener is bound exclusively to the loopback interface; it is not
 reachable from other hosts. There is no HTTP/SSE transport in this release.
 
-A small standalone Python script
-[`relay/protege-mcp-relay.py`](relay/protege-mcp-relay.py) bridges stdio MCP
-hosts (such as VS Code) to the TCP transport — see *VS Code (GitHub Copilot
-Chat)* below.
+The built `protege-mcp-<version>.jar` is **dual-purpose**: it is the OSGi
+bundle that Felix loads inside Protégé Desktop **and** an executable
+stdio↔TCP relay (`Main-Class: org.protege.mcp.ProtegeMcpRelay`, zero non-JDK
+dependencies). MCP hosts that only speak stdio (such as VS Code) use
+`java -jar protege-mcp.jar` to bridge to a Protégé instance you launched
+yourself — see *Attach mode (recommended)* below.
 
-## Transport (legacy, stdio detail)
+## Transport (stdio detail)
 
 The framed payload format, identical on both stdio and TCP, follows the
 [MCP stdio spec](https://modelcontextprotocol.io/docs/concepts/transports):
@@ -357,55 +359,112 @@ The macOS `Protégé.app` bundle produced by the `protege-os-x` assembly contain
 `bundles/` layout, but `stdio` is awkward to use from a double-click launch — prefer the
 platform-independent zip when wiring an MCP host.
 
+## Java relay (stdio ↔ TCP bridge)
+
+The same `protege-mcp-<version>.jar` doubles as a standalone executable
+relay — `Main-Class: org.protege.mcp.ProtegeMcpRelay`, zero non-JDK
+dependencies. It pumps Content-Length-framed JSON-RPC bytes between its own
+`stdin`/`stdout` and a TCP socket on the running Protégé bundle, with a 30 s
+connect retry loop so VS Code can be started before Protégé.
+
+```bash
+java -jar protege-mcp-5.6.10-SNAPSHOT.jar [--host=127.0.0.1] [--port=47800]
+```
+
+Configuration precedence (highest first): CLI flag → system property → env
+var → default.
+
+| Setting | CLI flag | System property | Env var | Default |
+| --- | --- | --- | --- | --- |
+| Host | `--host=…` | `-Dprotege.mcp.host=…` | `PROTEGE_MCP_HOST` | `127.0.0.1` |
+| Port | `--port=…` | `-Dprotege.mcp.tcp.port=…` | `PROTEGE_MCP_TCP_PORT` | `47800` |
+
+## Attach mode (recommended)
+
+Launch Protégé Desktop the way you normally would (Dock, Start menu,
+double-click `Protégé.app`, `run.sh`, …). The bundle binds its TCP transport
+automatically on `127.0.0.1:47800`. Then point an MCP host at the Java relay,
+which connects to that port:
+
+```
+VS Code ──stdio──▶ java -jar protege-mcp.jar ──TCP 127.0.0.1:47800──▶ Protégé
+```
+
+Nothing else needs to be running between MCP host launches; if Protégé is
+offline the relay retries the connection for up to 30 s.
+
+## Stdio mode
+
+For headless / one-shot use cases an MCP host can spawn Protégé itself and
+speak JSON-RPC over the inherited streams (`run.sh` / `run.bat` from the
+platform-independent distribution). The bundle's stdio transport is
+active whenever `protege.mcp.enabled` is not falsy. This bypasses the relay
+entirely but ties the lifetime of Protégé to the MCP host process.
+
 ## VS Code (GitHub Copilot Chat)
 
-VS Code's native MCP support reads server definitions from an `mcp.json` file. There are two
-locations:
+VS Code's native MCP support reads server definitions from an `mcp.json` file:
 
 - **Workspace-scoped:** `.vscode/mcp.json` at the project root.
-- **User-scoped:** the profile-level `mcp.json` opened via the command palette entry
-  *MCP: Open User Configuration*.
+- **User-scoped:** the profile-level `mcp.json` opened via *MCP: Open User
+  Configuration*.
 
-A ready-to-paste example lives at [examples/vscode-mcp.json](examples/vscode-mcp.json). It
-declares three stdio servers:
+A ready-to-paste example lives at [examples/vscode-mcp.json](examples/vscode-mcp.json),
+which matches the workspace-level [`.vscode/mcp.json`](../.vscode/mcp.json)
+used in this repository:
 
-- **`protege-mcp-attach`** *(recommended)* — VS Code spawns the Python relay
-  ([`relay/protege-mcp-relay.py`](relay/protege-mcp-relay.py)) which connects
-  to a Protégé instance you launched yourself (Dock, `run.sh`, `.app` bundle)
-  via the bundle's localhost TCP transport on `127.0.0.1:47800`.
-- **`protege-mcp-spawn`** — legacy: VS Code spawns `run.sh` itself and speaks
-  stdio with the subprocess.
-- **`protege-mcp-spawn-windows`** — same as `protege-mcp-spawn` but invokes
-  `run.bat`.
+```json
+{
+  "inputs": [
+    {
+      "id": "protegeBundleJar",
+      "type": "promptString",
+      "description": "Absolute path to protege-mcp-<version>.jar (also acts as the stdio<->TCP relay)."
+    },
+    {
+      "id": "javaBin",
+      "type": "promptString",
+      "description": "Path to a Java 11+ binary used to run the relay.",
+      "default": "java"
+    },
+    {
+      "id": "protegeMcpPort",
+      "type": "promptString",
+      "description": "TCP port exposed by the Protege MCP bundle (default 47800).",
+      "default": "47800"
+    }
+  ],
+  "servers": {
+    "protege-mcp": {
+      "type": "stdio",
+      "command": "${input:javaBin}",
+      "args": [
+        "-jar",
+        "${input:protegeBundleJar}",
+        "--host=127.0.0.1",
+        "--port=${input:protegeMcpPort}"
+      ]
+    }
+  }
+}
+```
 
-Step-by-step (attach mode, recommended):
+Step-by-step:
 
-1. **Build & extract Protégé Desktop** (once):
-   ```bash
-   mvn -DskipTests -Dmaven.compiler.proc=full -pl protege-desktop -am package
-   unzip protege-desktop/target/protege-5.6.10-SNAPSHOT-platform-independent.zip -d ~/tools
-   ```
-2. **Launch Protégé** the way you normally would (Dock icon, Start menu, or
-   `~/tools/Protege-5.6.10-SNAPSHOT/run.sh`). The bundle starts the localhost
-   TCP transport automatically on `127.0.0.1:47800`.
-3. **Install the config.** Copy `examples/vscode-mcp.json` to `.vscode/mcp.json`
-   for a workspace-scoped install, or open *MCP: Open User Configuration* and
-   merge the `inputs` / `servers` entries into the user file.
-4. **Reload VS Code.** Click *Start* on the `protege-mcp-attach` entry and at
-   the `relayScript` prompt paste the absolute path to
-   `protege-mcp/relay/protege-mcp-relay.py`. Leave `port` blank for the default
-   `47800`. Set it only if you overrode the port via `-Dprotege.mcp.tcp.port=<n>`
-   or `PROTEGE_MCP_TCP_PORT=<n>`.
+1. **Build the bundle** once: `mvn -pl protege-mcp -am package`. The resulting
+   `protege-mcp/target/protege-mcp-5.6.10-SNAPSHOT.jar` is both the OSGi
+   bundle dropped into `bundles/` and the executable relay used below.
+2. **Launch Protégé** (Dock icon / `Protégé.app` / `run.sh`). The TCP
+   transport binds `127.0.0.1:47800` automatically; override with
+   `-Dprotege.mcp.tcp.port=<n>` / `PROTEGE_MCP_TCP_PORT=<n>` or disable with
+   `-Dprotege.mcp.tcp.enabled=false` / `PROTEGE_MCP_TCP_ENABLED=false`.
+3. **Install the config** (copy `examples/vscode-mcp.json` to
+   `.vscode/mcp.json`, or merge into your user-level file).
+4. **Reload VS Code**, click *Start* on the `protege-mcp` entry, paste the
+   absolute path to the bundle JAR at the `protegeBundleJar` prompt, accept
+   the default port unless overridden.
 5. **Use Copilot Chat in agent mode** and reference tools by name, e.g.
-   `#protege-mcp-attach/ontology_list` or `#protege-mcp-attach/dl_query`.
-
-Alternative (spawn mode, legacy): start the `protege-mcp-spawn` (or
-`protege-mcp-spawn-windows`) entry instead. VS Code will prompt for
-`protegeHome` (the extracted Protégé directory containing `run.sh` / `run.bat`)
-and an optional `JAVA_HOME`, then spawn Protégé as a stdio child process. A
-Swing window will pop up — send it to the background but do **not** quit
-Protégé from its menu, as that would terminate the MCP server subprocess.
-VS Code's *Stop* button on the server entry is the correct way to shut it down.
+   `#protege-mcp/ontology_list` or `#protege-mcp/dl_query`.
 
 The full tool catalogue and JSON-RPC surface are documented in
 [docs/mcp-server-spec.md](../docs/mcp-server-spec.md).

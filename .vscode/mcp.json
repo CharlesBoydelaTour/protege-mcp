@@ -3,13 +3,14 @@
         {
             "id": "protegeBundleJar",
             "type": "promptString",
-            "description": "Absolute path to protege-mcp-<version>.jar (also acts as the stdio<->TCP relay)."
+            "description": "Absolute path to protege-mcp-<version>.jar (also acts as the stdio<->TCP relay).",
+            "default": "/Users/charlesboydelatour/protégé-mcp/protege-mcp/protege-desktop/target/protege-5.6.10-SNAPSHOT-platform-independent/Protege-5.6.10-SNAPSHOT/bundles/protege-mcp.jar"
         },
         {
             "id": "javaBin",
             "type": "promptString",
             "description": "Path to a Java 11+ binary used to run the relay.",
-            "default": "java"
+            "default": "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
         },
         {
             "id": "protegeMcpPort",

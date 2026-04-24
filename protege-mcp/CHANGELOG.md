@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The MCP server is versioned independently from the host Protégé Desktop assembly.
 
+## [Unreleased]
+
+### Added
+
+- `org.protege.mcp.ProtegeMcpRelay`: a pure-JDK stdio↔TCP relay packaged
+  into the same `protege-mcp-<version>.jar`. The JAR is now dual-purpose
+  — Felix loads it as an OSGi bundle inside Protégé, and `java -jar` runs
+  it as an executable relay (`Main-Class: org.protege.mcp.ProtegeMcpRelay`,
+  zero non-JDK dependencies). Accepts `--host=` / `--port=` CLI flags,
+  `-Dprotege.mcp.host` / `-Dprotege.mcp.tcp.port` system properties, and
+  `PROTEGE_MCP_HOST` / `PROTEGE_MCP_TCP_PORT` env vars; defaults to
+  `127.0.0.1:47800`. Includes a 30 s connect retry loop so MCP hosts
+  may be started before Protégé.
+- New "Attach mode (recommended)" workflow documented in the README:
+  launch Protégé normally → bundle auto-binds `127.0.0.1:47800` → VS Code
+  spawns the Java relay via `.vscode/mcp.json` → MCP requests flow into
+  the running Protégé.
+
+### Changed
+
+- `examples/vscode-mcp.json` rewritten to declare a single `protege-mcp`
+  stdio server invoking `java -jar protege-mcp.jar` with `--host` /
+  `--port` flags. Matches the workspace-level `.vscode/mcp.json`.
+
+### Removed
+
+- `protege-mcp/relay/protege-mcp-relay.py` (Python stdio↔TCP relay) and
+  every README / example reference to it. The Java relay shipped inside
+  the bundle JAR replaces it.
+
 ## [0.4.0] - 2026-04-23
 
 ### Added
