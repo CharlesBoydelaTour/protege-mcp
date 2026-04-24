@@ -1,0 +1,33 @@
+{
+    "inputs": [
+        {
+            "id": "protegeBundleJar",
+            "type": "promptString",
+            "description": "Absolute path to protege-mcp-<version>.jar (also acts as the stdio<->TCP relay)."
+        },
+        {
+            "id": "javaBin",
+            "type": "promptString",
+            "description": "Path to a Java 11+ binary used to run the relay.",
+            "default": "java"
+        },
+        {
+            "id": "protegeMcpPort",
+            "type": "promptString",
+            "description": "TCP port exposed by the Protege MCP bundle (default 47800).",
+            "default": "47800"
+        }
+    ],
+    "servers": {
+        "protege-mcp": {
+            "type": "stdio",
+            "command": "${input:javaBin}",
+            "args": [
+                "-jar",
+                "${input:protegeBundleJar}",
+                "--host=127.0.0.1",
+                "--port=${input:protegeMcpPort}"
+            ]
+        }
+    }
+}

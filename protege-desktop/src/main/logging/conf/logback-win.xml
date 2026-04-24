@@ -2,6 +2,10 @@
 <configuration scan="true" scanPeriod="10 seconds">
 
     <appender name="stdout" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- Target stderr so the console appender does not corrupt the MCP
+             stdio JSON-RPC frame stream when protege.mcp.enabled=true.
+             For non-MCP launches this still surfaces logs in the terminal. -->
+        <target>System.err</target>
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <Pattern>%msg %n</Pattern>
         </encoder>
